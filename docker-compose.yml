@@ -1,0 +1,69 @@
+# Almanac — the whole system is Postgres. The other services are "hands":
+#   browser  : Playwright sidecar (JS-rendered pages, logins, clicks)
+#   searxng  : self-hosted web search backend
+# The LLM + embeddings (vLLM) run on your GPU host and are reached over the
+# network via the *_BASE_URL config values.
+
+services:
+  db:
+    build: ./db
+    image: almanac-db:local
+    restart: unless-stopped
+    # pg_cron must be preloaded and pointed at our database.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron
+      - -c
+      - cron.database_name=${POSTGRES_DB:-almanac}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-almanac}
+      POSTGRES_USER: ${POSTGRES_USER:-almanac}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-almanac}
+      # Passed to the bootstrap init script (99_bootstrap.sh) — loaded into the
+      # encrypted secrets/config tables on first init, then live only in the DB.
+      ALMANAC_SECRET_KEY: ${ALMANAC_SECRET_KEY}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_API_KEY: ${LLM_API_KEY:-not-needed}
+      EMBED_BASE_URL: ${EMBED_BASE_URL}
+      EMBED_MODEL: ${EMBED_MODEL}
+      EMBED_API_KEY: ${EMBED_API_KEY:-not-needed}
+      EMBED_DIM: ${EMBED_DIM:-1024}
+      SEARCH_BASE_URL: ${SEARCH_BASE_URL:-http://searxng:8080}
+      BROWSER_BASE_URL: ${BROWSER_BASE_URL:-http://browser:3000}
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    extra_hosts:
+      # lets the db container reach a vLLM server running on the host
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5432:5432"
+    depends_on:
+      - browser
+      - searxng
+
+  browser:
+    build: ./services/browser
+    image: almanac-browser:local
+    restart: unless-stopped
+    # Chromium is memory-hungry; cap it so it can never starve the host.
+    mem_limit: 2g
+    environment:
+      PORT: "3000"
+    # No published port — only the db container talks to it over the compose net.
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      # JSON output is needed by web_search(); enabled via settings.yml below.
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      - ./services/searxng:/etc/searxng:ro
+
+volumes:
+  pgdata:

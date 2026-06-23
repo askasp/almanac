@@ -1,0 +1,14 @@
+# Secrets / local env
+.env
+*.local
+
+# Node (browser sidecar + scripts)
+node_modules/
+npm-debug.log*
+
+# Gmail one-time OAuth artifacts
+scripts/token.json
+scripts/credentials.json
+
+# Postgres data (if ever bind-mounted)
+pgdata/
