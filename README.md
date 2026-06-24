@@ -32,6 +32,10 @@ Just type naturally — it figures out whether you're recording a fact or asking
 | `weather in Oslo?` | searches the web |
 | `check the price of flights to tokyo next month` | opens a real browser |
 | `every morning, check flight deals to tokyo and DM me` | builds + schedules a pipeline |
+| `remind me friday 5pm to call the bank` | sets a one-off reminder |
+| `every weekday at 9, remind me to post standup` | schedules a recurring job |
+| `track my workouts: type, distance, minutes` | creates a table you can log into |
+| `add a healthcheck endpoint to the api project` | runs a coding session (opencode) |
 
 ### One chat, many conversations
 
@@ -75,6 +79,7 @@ few seconds.
 - `db` — Postgres with pg_cron / pgsql-http / pgvector / pgcrypto, all the logic, and the
   scheduled workers.
 - `browser` — the Playwright sidecar (built from `mcr.microsoft.com/playwright`).
+- `opencode` — coding-agent sidecar; runs `opencode run` against `./workspace` (uses your vLLM).
 - `searxng` — the web-search backend.
 
 The model + embeddings run wherever you pointed `LLM_BASE_URL` / `EMBED_BASE_URL` (the
@@ -102,6 +107,24 @@ SELECT run_pipeline((SELECT id FROM pipelines WHERE slug='tokyo'), 'manual');
 Run on demand: `/run tokyo`. Schedule: `/schedule tokyo 0 8 * * *` (adds a `pg_cron` job
 `pipeline-tokyo`). Note: heavy sites like Google Flights / Airbnb have anti-bot measures —
 scraping may need tuning or an official API.
+
+## Coding, scheduling & custom tables
+
+Three more things you can do by just asking:
+
+- **Code** — "add a healthcheck to the api project" starts an [opencode](https://opencode.ai)
+  session in the background (the `opencode` sidecar, pointed at your vLLM). It works on
+  whatever you've cloned into `./workspace`, or pass a git URL to clone. You get the result
+  and a `git diff` by DM when it finishes — long runs are fine, almanac polls and notifies.
+- **Schedule** — "remind me at 5pm to call the bank" sets a one-off reminder; "every weekday
+  at 9, remind me to post standup" registers a recurring `pg_cron` job. `schedule_task` runs
+  any tool or sends a message on a cron; "what's scheduled?" lists everything; "stop that"
+  removes it (core jobs are protected).
+- **New tables** — "track my workouts: type, distance, minutes" creates a real table
+  (`create_table`) in a dedicated `userdata` schema, recorded in `schema_migrations`. Then
+  "log a 5k run, 25 min" and "how far did I run this week?" use `insert_row` / `query_rows`.
+  The model never writes SQL — structured tools build the DDL with identifier quoting and a
+  type allowlist; `add_column` / `drop_table` confirm first.
 
 ## Gmail daily summary (optional)
 
@@ -141,9 +164,12 @@ just a local Postgres with `pgvector`:
 db/                 Postgres image + numbered init scripts (the whole system)
   init/0xx          extensions, schema, secrets, config
   init/01x..018     http, tools, llm loop, telegram, worker, web, pipelines, kb, gmail
+  init/019..021     opencode coding jobs, scheduling/reminders, user-created tables
   init/090_cron     scheduled jobs
   init/099_bootstrap.sh   loads secrets/config from env on first init
 services/browser    Playwright sidecar (POST /browse)
+services/opencode   opencode coding sidecar (POST /code → run a session)
 services/searxng    web-search config
+workspace/          projects opencode works on (git-ignored; clone your repos here)
 scripts/oauth.mjs   one-time Gmail consent
 ```

@@ -33,6 +33,7 @@ services:
       EMBED_DIM: ${EMBED_DIM:-1024}
       SEARCH_BASE_URL: ${SEARCH_BASE_URL:-http://searxng:8080}
       BROWSER_BASE_URL: ${BROWSER_BASE_URL:-http://browser:3000}
+      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:5000}
       GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
     volumes:
@@ -45,6 +46,7 @@ services:
     depends_on:
       - browser
       - searxng
+      - opencode
 
   browser:
     build: ./services/browser
@@ -54,6 +56,26 @@ services:
     mem_limit: 2g
     environment:
       PORT: "3000"
+    # No published port — only the db container talks to it over the compose net.
+
+  # opencode coding sidecar: runs `opencode run` for the db over HTTP. Uses the
+  # same self-hosted vLLM as its model provider; edits code in ./workspace.
+  opencode:
+    build: ./services/opencode
+    image: almanac-opencode:local
+    restart: unless-stopped
+    mem_limit: 2g
+    environment:
+      PORT: "5000"
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_API_KEY: ${LLM_API_KEY:-not-needed}
+    volumes:
+      # Persistent place for the projects opencode works on (clone your repos here).
+      - ./workspace:/workspace
+    extra_hosts:
+      # lets opencode reach a vLLM server running on the host
+      - "host.docker.internal:host-gateway"
     # No published port — only the db container talks to it over the compose net.
 
   searxng:

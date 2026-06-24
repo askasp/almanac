@@ -12,3 +12,7 @@ scripts/credentials.json
 
 # Postgres data (if ever bind-mounted)
 pgdata/
+
+# opencode workspace: cloned projects live here; keep only the placeholder
+workspace/*
+!workspace/.gitkeep

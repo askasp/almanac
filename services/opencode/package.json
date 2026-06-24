@@ -1,0 +1,8 @@
+{
+  "name": "almanac-opencode",
+  "version": "1.0.0",
+  "private": true,
+  "description": "opencode coding sidecar for Almanac (POST /code, GET /code/:id).",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" }
+}

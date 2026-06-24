@@ -7,6 +7,8 @@
 SELECT cron.schedule('almanac-poll',    '5 seconds', 'SELECT tg_poll()');
 SELECT cron.schedule('almanac-process', '5 seconds', 'SELECT process_pending()');
 SELECT cron.schedule('almanac-kb',      '* * * * *', 'SELECT kb_ingest()');  -- every minute
+SELECT cron.schedule('almanac-code',    '20 seconds', 'SELECT code_poll()');     -- watch coding jobs
+SELECT cron.schedule('almanac-remind',  '* * * * *', 'SELECT reminder_tick()');  -- one-off reminders
 SELECT cron.schedule('almanac-daily',   '0 7 * * *', 'SELECT daily_summary()');
 
 -- job_run_details grows fast at seconds granularity; keep it trimmed.

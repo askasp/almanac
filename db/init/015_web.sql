@@ -19,7 +19,7 @@ RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE h text := url_host(p_url);
 BEGIN
   IF p_url !~* '^https?://' OR h IS NULL THEN RETURN false; END IF;
-  IF h IN ('localhost','db','browser','searxng','host.docker.internal') THEN RETURN false; END IF;
+  IF h IN ('localhost','db','browser','searxng','opencode','host.docker.internal') THEN RETURN false; END IF;
   IF h ~ '^(127\.|10\.|0\.|169\.254\.|192\.168\.|::1$)' THEN RETURN false; END IF;
   IF h ~ '^172\.(1[6-9]|2[0-9]|3[0-1])\.' THEN RETURN false; END IF;
   IF h ~ '\.(local|internal)$' THEN RETURN false; END IF;

@@ -25,6 +25,9 @@ SET almanac.secret_key = 'testkey';
 \ir ../db/init/016_pipelines.sql
 \ir ../db/init/017_kb.sql
 \ir ../db/init/018_gmail.sql
+\ir ../db/init/019_opencode.sql
+\ir ../db/init/020_schedule.sql
+\ir ../db/init/021_userdata.sql
 \ir ../db/init/090_cron.sql
 
 SELECT set_cfg('llm_base_url','http://llm');
@@ -32,6 +35,7 @@ SELECT set_cfg('embed_base_url','http://embed');
 SELECT set_cfg('tg_api_base','http://tg');
 SELECT set_cfg('search_base_url','http://search');
 SELECT set_cfg('browser_base_url','http://browser');
+SELECT set_cfg('opencode_base_url','http://opencode');
 SELECT set_secret('telegram_token','TESTTOKEN');
 SELECT set_secret('llm_api_key','x');
 SELECT set_secret('embed_api_key','x');
@@ -191,9 +195,80 @@ DO $$
 DECLARE n int;
 BEGIN
   SELECT count(*) INTO n FROM cron.job WHERE jobname IN
-    ('almanac-poll','almanac-process','almanac-kb','almanac-daily','almanac-cleanup');
-  ASSERT n=5, 'expected 5 standing jobs, got '||n;
+    ('almanac-poll','almanac-process','almanac-kb','almanac-code','almanac-remind','almanac-daily','almanac-cleanup');
+  ASSERT n=7, 'expected 7 standing jobs, got '||n;
   RAISE NOTICE 'Test I passed';
+END $$;
+
+\echo '== Test J: opencode coding sidecar (async + notify) =='
+SELECT set_cfg('owner_chat_id','5');
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('opencode/code','{"job_id":"abc123"}'),
+ ('opencode/code/abc123','{"status":"done","result":"Added a healthcheck endpoint","diff":"--- a/app.js\n+++ b/app.js"}'),
+ ('sendMessage','{"ok":true,"result":{"message_id":2000}}');
+DO $$
+DECLARE r text; st text; n int;
+BEGIN
+  r := execute_tool('code','{"prompt":"add a healthcheck endpoint"}'::jsonb);
+  ASSERT r ILIKE '%Started coding job%', 'tool_code: '||r;
+  SELECT status INTO st FROM code_jobs ORDER BY id DESC LIMIT 1;
+  ASSERT st='running', 'job should be running, got: '||st;
+  PERFORM code_poll();
+  SELECT status INTO st FROM code_jobs ORDER BY id DESC LIMIT 1;
+  ASSERT st='done', 'job should be done after poll, got: '||st;
+  SELECT count(*) INTO n FROM http_mock_queue WHERE seen_uri ILIKE '%sendMessage%' AND seen_body ILIKE '%Coding job%';
+  ASSERT n>=1, 'requester was not notified of the finished job';
+  RAISE NOTICE 'Test J passed';
+END $$;
+
+\echo '== Test K: voice scheduling (task, reminder, list, unschedule) =='
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('sendMessage','{"ok":true,"result":{"message_id":2100}}');
+DO $$
+DECLARE r text; n int; tid bigint;
+BEGIN
+  r := execute_tool('schedule_task','{"cron":"0 9 * * 1-5","tool":"add_note","args":{"body":"standup"}}'::jsonb);
+  ASSERT r ILIKE '%Scheduled task%', 'schedule_task: '||r;
+  SELECT id INTO tid FROM scheduled_tasks ORDER BY id DESC LIMIT 1;
+  SELECT count(*) INTO n FROM cron.job WHERE jobname='task-'||tid; ASSERT n=1, 'task cron not registered';
+  PERFORM run_scheduled_task(tid);
+  SELECT count(*) INTO n FROM notes WHERE body='standup'; ASSERT n=1, 'scheduled tool did not run';
+  PERFORM execute_tool('remind', jsonb_build_object('message','call the bank',
+                       'at', to_char(now()-interval '1 minute','YYYY-MM-DD"T"HH24:MI:SSOF')));
+  PERFORM reminder_tick();
+  SELECT count(*) INTO n FROM reminders WHERE message='call the bank' AND sent; ASSERT n=1, 'reminder not sent';
+  r := execute_tool('list_schedules','{}'::jsonb);
+  ASSERT r ILIKE '%task-'||tid||'%', 'list_schedules missing task: '||r;
+  r := execute_tool('unschedule', jsonb_build_object('name','task-'||tid));
+  ASSERT r ILIKE '%Unscheduled%', 'unschedule: '||r;
+  SELECT count(*) INTO n FROM cron.job WHERE jobname='task-'||tid; ASSERT n=0, 'task not unscheduled';
+  RAISE NOTICE 'Test K passed';
+END $$;
+
+\echo '== Test L: voice-created tables (DDL, audited, guarded) =='
+DO $$
+DECLARE r text; n int;
+BEGIN
+  r := execute_tool('create_table','{"name":"workouts","columns":[{"name":"kind","type":"text"},{"name":"distance_km","type":"numeric"},{"name":"minutes","type":"int"}]}'::jsonb);
+  ASSERT r ILIKE '%Created table%', 'create_table: '||r;
+  SELECT count(*) INTO n FROM information_schema.tables WHERE table_schema='userdata' AND table_name='workouts';
+  ASSERT n=1, 'userdata.workouts not created';
+  SELECT count(*) INTO n FROM schema_migrations WHERE name='create_table:workouts';
+  ASSERT n=1, 'migration not recorded';
+  r := execute_tool('insert_row','{"table":"workouts","data":{"kind":"run","distance_km":5,"minutes":25}}'::jsonb);
+  ASSERT r ILIKE '%Added a row%', 'insert_row: '||r;
+  r := execute_tool('query_rows','{"table":"workouts","match":{"kind":"run"}}'::jsonb);
+  ASSERT r ILIKE '%run%', 'query_rows content: '||r;
+  ASSERT r ILIKE '%25%', 'query_rows minutes: '||r;
+  r := execute_tool('list_tables','{}'::jsonb);
+  ASSERT r ILIKE '%workouts%', 'list_tables: '||r;
+  r := execute_tool('drop_table','{"table":"workouts"}'::jsonb);
+  ASSERT r ILIKE '%Confirm%', 'drop without confirm should ask first: '||r;
+  SELECT count(*) INTO n FROM information_schema.tables WHERE table_schema='userdata' AND table_name='workouts';
+  ASSERT n=1, 'table was dropped without confirm!';
+  r := execute_tool('drop_table','{"table":"workouts","confirm":true}'::jsonb);
+  ASSERT r ILIKE '%Dropped%', 'drop with confirm: '||r;
+  RAISE NOTICE 'Test L passed';
 END $$;
 
 \echo ''

@@ -1,0 +1,5 @@
+# This directory is mounted into the opencode sidecar at /workspace.
+# Clone the projects you want the assistant to work on into here, e.g.:
+#   git clone <your-repo> workspace/myproject
+# then ask in chat: "use the code tool on myproject to add a healthcheck".
+# Contents are git-ignored; only this placeholder is tracked.

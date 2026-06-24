@@ -36,6 +36,7 @@ set_cfg embed_base_url   "${EMBED_BASE_URL:-}"
 set_cfg embed_model      "${EMBED_MODEL:-}"
 set_cfg search_base_url  "${SEARCH_BASE_URL:-}"
 set_cfg browser_base_url "${BROWSER_BASE_URL:-}"
+set_cfg opencode_base_url "${OPENCODE_BASE_URL:-}"
 set_cfg gmail_client_id  "${GMAIL_CLIENT_ID:-}"
 
 echo "[almanac] bootstrap complete."
