@@ -38,5 +38,6 @@ set_cfg search_base_url  "${SEARCH_BASE_URL:-}"
 set_cfg browser_base_url "${BROWSER_BASE_URL:-}"
 set_cfg opencode_base_url "${OPENCODE_BASE_URL:-}"
 set_cfg gmail_client_id  "${GMAIL_CLIENT_ID:-}"
+set_cfg team_mode        "${TEAM_MODE:-}"
 
 echo "[almanac] bootstrap complete."

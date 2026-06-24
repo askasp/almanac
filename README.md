@@ -132,6 +132,22 @@ Three more things you can do by just asking:
 2. `node scripts/oauth.mjs` — approve in the browser; it stores an encrypted refresh token.
 3. The `almanac-daily` job (7am) DMs you the agenda + due todos + unread-mail digest.
 
+## Team mode (one instance per context)
+
+Almanac is single-user by default. To run a **shared team instance**, deploy a second copy
+with its own bot token and `TEAM_MODE=on` in `.env`. Then:
+
+- Members are recognised by their Telegram user id on first message — no signup.
+- Todos, calendar, notes and items are **shared** across the team and **attributed** to
+  whoever created them (`list_todos` shows "· Alice"), so you see what everyone's working on.
+- **Email and credentials stay private per member** — each connects their own inbox
+  (`email_accounts`, via `team_connect_email(...)`), and the daily summary DMs each member
+  the shared agenda plus *their own* inbox digest.
+
+Keep your personal almanac as a separate instance (its own bot, `TEAM_MODE=off`). You end up
+with one private chat and one team chat — one AI per context, no data co-mingled. With team
+mode off, everything behaves exactly as the single-user system above.
+
 ## Operating it
 
 ```sql

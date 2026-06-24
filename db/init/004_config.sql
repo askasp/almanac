@@ -21,6 +21,11 @@ SELECT set_cfg('http_timeout','120');     -- seconds, for pgsql-http calls
 SELECT set_cfg('poll_enabled',    'on');
 SELECT set_cfg('process_enabled', 'on');
 
+-- Team mode: one instance per context. 'off' = single-user (default). When 'on',
+-- members are identified by Telegram user id; data is shared but attributed, and
+-- email/credentials stay per-member. See db/init/030_team.sql.
+SELECT set_cfg('team_mode', 'off');
+
 -- Single Telegram chat: consecutive messages within this many minutes continue
 -- the active thread; reply-to-a-message or "#slug ..." jumps to any thread;
 -- a longer gap starts a fresh one. /new forces a fresh thread.

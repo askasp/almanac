@@ -36,6 +36,7 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:5000}
       GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+      TEAM_MODE: ${TEAM_MODE:-off}
     volumes:
       - pgdata:/var/lib/postgresql/data
     extra_hosts:

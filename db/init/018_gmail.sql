@@ -50,15 +50,16 @@ BEGIN
   RETURN pgp_sym_decrypt(tok, k);
 END $$;
 
--- Short digest of recent unread mail.
-CREATE OR REPLACE FUNCTION gmail_fetch()
+-- Short digest of recent unread mail for a given access token. Reused by both
+-- the single-user gmail_fetch() and the per-member team digest (030_team.sql).
+CREATE OR REPLACE FUNCTION gmail_unread_digest(p_token text)
 RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
-  tok text := gmail_access_token(); hdr jsonb; resp http_response; ids jsonb; mid text;
+  hdr jsonb; resp http_response; ids jsonb; mid text;
   subj text; frm text; m jsonb; out text := '';
 BEGIN
-  IF tok IS NULL THEN RETURN '(Gmail not connected)'; END IF;
-  hdr := jsonb_build_object('Authorization', 'Bearer ' || tok);
+  IF p_token IS NULL THEN RETURN '(Gmail not connected)'; END IF;
+  hdr := jsonb_build_object('Authorization', 'Bearer ' || p_token);
   resp := almanac_http_get(
     'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5&q='
     || urlencode('is:unread newer_than:1d'), hdr);
@@ -79,6 +80,13 @@ BEGIN
     out := out || format(E'- %s — %s\n', COALESCE(subj,'(no subject)'), COALESCE(frm,'?'));
   END LOOP;
   RETURN COALESCE(NULLIF(out,''), 'No unread mail.');
+END $$;
+
+-- Single-user inbox digest (the one encrypted gmail_auth token).
+CREATE OR REPLACE FUNCTION gmail_fetch()
+RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN gmail_unread_digest(gmail_access_token());
 END $$;
 
 -- The 7am push: agenda + due todos + inbox digest. Per-step error isolation.

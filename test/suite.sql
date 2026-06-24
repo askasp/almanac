@@ -28,6 +28,7 @@ SET almanac.secret_key = 'testkey';
 \ir ../db/init/019_opencode.sql
 \ir ../db/init/020_schedule.sql
 \ir ../db/init/021_userdata.sql
+\ir ../db/init/030_team.sql
 \ir ../db/init/090_cron.sql
 
 SELECT set_cfg('llm_base_url','http://llm');
@@ -270,6 +271,50 @@ BEGIN
   ASSERT r ILIKE '%Dropped%', 'drop with confirm: '||r;
   RAISE NOTICE 'Test L passed';
 END $$;
+
+\echo '== Test M: team mode (identity, attribution, per-member threads) =='
+SELECT set_cfg('team_mode','on');
+UPDATE messages SET status='done' WHERE status='pending';  -- drop earlier tests' unprocessed intake (Test D)
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('getUpdates','{"ok":true,"result":[{"update_id":50,"message":{"message_id":500,"chat":{"id":111},"from":{"id":111,"first_name":"Alice"},"text":"buy printer paper"}},{"update_id":51,"message":{"message_id":501,"chat":{"id":222},"from":{"id":222,"first_name":"Bob"},"text":"book the venue"}}]}'),
+ ('chat/completions','{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"add_todo","arguments":"{\"title\":\"buy printer paper\"}"}}]}}]}'),
+ ('chat/completions','{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Added."}}]}'),
+ ('sendMessage','{"ok":true,"result":{"message_id":600}}'),
+ ('chat/completions','{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"t2","type":"function","function":{"name":"add_todo","arguments":"{\"title\":\"book the venue\"}"}}]}}]}'),
+ ('chat/completions','{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Added."}}]}'),
+ ('sendMessage','{"ok":true,"result":{"message_id":601}}');
+DO $$
+DECLARE n bigint; aid bigint; bid bigint; r text;
+BEGIN
+  PERFORM tg_poll();
+  SELECT count(*) INTO n FROM members; ASSERT n=2, 'expected 2 members, got '||n;
+  SELECT id INTO aid FROM members WHERE tg_user_id=111;
+  SELECT id INTO bid FROM members WHERE tg_user_id=222;
+  SELECT count(DISTINCT thread_id) INTO n FROM messages WHERE content IN ('buy printer paper','book the venue');
+  ASSERT n=2, 'each member should get their own thread, got '||n;
+  PERFORM process_pending();
+  SELECT member_id INTO n FROM todos WHERE title='buy printer paper'; ASSERT n=aid, 'paper todo not attributed to Alice';
+  SELECT member_id INTO n FROM todos WHERE title='book the venue';   ASSERT n=bid, 'venue todo not attributed to Bob';
+  r := execute_tool('list_todos','{}'::jsonb);
+  ASSERT r ILIKE '%· Alice%', 'list_todos missing Alice attribution: '||r;
+  ASSERT r ILIKE '%· Bob%',   'list_todos missing Bob attribution: '||r;
+  RAISE NOTICE 'Test M passed';
+END $$;
+
+\echo '== Test M2: team daily summary DMs each member =='
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('sendMessage','{"ok":true,"result":{"message_id":700}}'),
+ ('sendMessage','{"ok":true,"result":{"message_id":701}}');
+DO $$
+DECLARE n bigint;
+BEGIN
+  PERFORM daily_summary();
+  SELECT count(*) INTO n FROM http_mock_queue
+   WHERE consumed AND seen_uri ILIKE '%sendMessage%' AND seen_body ILIKE '%Good morning%';
+  ASSERT n>=2, 'daily_summary should DM each active member, got '||n;
+  RAISE NOTICE 'Test M2 passed';
+END $$;
+SELECT set_cfg('team_mode','off');   -- restore default
 
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'
