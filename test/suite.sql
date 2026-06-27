@@ -316,5 +316,23 @@ BEGIN
 END $$;
 SELECT set_cfg('team_mode','off');   -- restore default
 
+\echo '== Test N: chat allowlist (personal-mode access control) =='
+SELECT set_cfg('allowed_chat_ids','5');   -- only user/chat id 5 may use the bot
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('getUpdates','{"ok":true,"result":[{"update_id":60,"message":{"message_id":800,"chat":{"id":5},"from":{"id":5},"text":"allowed hello"}},{"update_id":61,"message":{"message_id":801,"chat":{"id":999},"from":{"id":999},"text":"stranger hello"}}]}');
+DO $$
+DECLARE n int; lu bigint;
+BEGIN
+  PERFORM tg_poll();
+  SELECT count(*) INTO n FROM messages WHERE content='allowed hello';
+  ASSERT n=1, 'allowlisted sender should be ingested, got '||n;
+  SELECT count(*) INTO n FROM messages WHERE content='stranger hello';
+  ASSERT n=0, 'non-allowlisted sender must be dropped, got '||n;
+  SELECT last_update_id INTO lu FROM tg_state;
+  ASSERT lu=61, 'offset must advance past dropped updates too, got '||lu;
+  RAISE NOTICE 'Test N passed';
+END $$;
+SELECT set_cfg('allowed_chat_ids','');   -- restore default (allow all)
+
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

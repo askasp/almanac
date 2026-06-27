@@ -76,6 +76,12 @@ docker compose up -d --build
 That's it. Open Telegram, message your bot, and say hi. The bot starts polling within a
 few seconds.
 
+> **Lock it to yourself.** Anyone who finds your bot can message it, so for a personal
+> deployment set `ALLOWED_CHAT_IDS` in `.env` to your Telegram user id (get it from
+> [@userinfobot](https://t.me/userinfobot); comma-separate several). Empty (the default)
+> allows anyone; messages from non-listed senders are silently ignored. In team mode the
+> same list gates who may join as a member.
+
 - `db` — Postgres with pg_cron / pgsql-http / pgvector / pgcrypto, all the logic, and the
   scheduled workers.
 - `browser` — the Playwright sidecar (built from `mcr.microsoft.com/playwright`).

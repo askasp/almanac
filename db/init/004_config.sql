@@ -26,6 +26,12 @@ SELECT set_cfg('process_enabled', 'on');
 -- email/credentials stay per-member. See db/init/030_team.sql.
 SELECT set_cfg('team_mode', 'off');
 
+-- Access control: comma-separated Telegram user ids (or chat ids) allowed to use
+-- this bot. EMPTY = allow anyone who messages it (default). Lock a personal
+-- deployment to yourself by setting your Telegram user id (see @userinfobot). In
+-- team mode this also gates who may join as a member.
+SELECT set_cfg('allowed_chat_ids', '');
+
 -- Single Telegram chat: consecutive messages within this many minutes continue
 -- the active thread; reply-to-a-message or "#slug ..." jumps to any thread;
 -- a longer gap starts a fresh one. /new forces a fresh thread.

@@ -49,6 +49,20 @@ BEGIN
   RETURN NULL;
 END $$;
 
+-- Access control: may this sender use the bot? `allowed_chat_ids` is a comma-
+-- separated list of Telegram user ids (or chat ids); EMPTY = allow everyone
+-- (default). Lock a personal bot to yourself by listing your own id.
+CREATE OR REPLACE FUNCTION tg_allowed(p_uid bigint, p_chat bigint)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN btrim(cfg('allowed_chat_ids','')) = '' THEN true
+    ELSE EXISTS (
+      SELECT 1 FROM regexp_split_to_table(cfg('allowed_chat_ids',''), ',') AS x
+      WHERE btrim(x) <> '' AND btrim(x) IN (p_uid::text, p_chat::text)
+    )
+  END
+$$;
+
 -- Pull new updates, resolve each to a thread, queue as pending user messages.
 -- Returns the number of text messages ingested.
 CREATE OR REPLACE FUNCTION tg_poll()
@@ -56,7 +70,7 @@ RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
   token text := get_secret('telegram_token');
   off bigint; resp http_response; updates jsonb; u jsonb; m jsonb;
-  v_chat bigint; v_mid bigint; v_text text; v_reply bigint;
+  v_chat bigint; v_mid bigint; v_text text; v_reply bigint; v_uid bigint;
   v_thread bigint; v_slug text; v_content text; cnt int := 0; maxu bigint;
 BEGIN
   IF cfg('poll_enabled','on') <> 'on' OR token IS NULL THEN RETURN 0; END IF;
@@ -84,6 +98,10 @@ BEGIN
     v_reply   := (m->'reply_to_message'->>'message_id')::bigint;
     v_content := v_text;
     v_thread  := NULL;
+    v_uid     := (m->'from'->>'id')::bigint;
+
+    -- access control: drop senders not on the allowlist (empty list = allow all)
+    CONTINUE WHEN NOT tg_allowed(v_uid, v_chat);
 
     -- /new always starts a fresh thread (overrides the session window)
     IF lower(btrim(v_text)) ~ '^/new(\s|$)' THEN

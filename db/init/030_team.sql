@@ -118,10 +118,14 @@ BEGIN
     v_content := v_text;
     v_thread  := NULL;
     v_member  := NULL;
+    v_uid     := (m->'from'->>'id')::bigint;
+
+    -- Access control: drop senders not on the allowlist (empty list = allow all).
+    -- In a team this doubles as a roster gate (only listed ids may join).
+    CONTINUE WHEN NOT tg_allowed(v_uid, v_chat);
 
     -- In a team, identify the sender and keep their member row fresh.
     IF team THEN
-      v_uid  := (m->'from'->>'id')::bigint;
       v_name := NULLIF(btrim(COALESCE(m->'from'->>'first_name','') || ' ' ||
                              COALESCE(m->'from'->>'last_name','')), '');
       IF v_uid IS NOT NULL THEN
