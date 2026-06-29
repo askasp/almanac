@@ -91,6 +91,10 @@ few seconds.
 The model + embeddings run wherever you pointed `LLM_BASE_URL` / `EMBED_BASE_URL` (the
 compose file maps `host.docker.internal` to the host so a vLLM on the same machine works).
 
+See **[docs/COOKBOOK.md](docs/COOKBOOK.md)** for worked examples — daily email summary,
+coding, flight tracking, custom tables, reminders — each with what works by default and
+the exact setup to run.
+
 ## Pipelines
 
 A pipeline is an ordered list of steps stored as plain rows. Steps are:
