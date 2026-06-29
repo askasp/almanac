@@ -334,5 +334,26 @@ BEGIN
 END $$;
 SELECT set_cfg('allowed_chat_ids','');   -- restore default (allow all)
 
+\echo '== Test O: self-describing tables (descriptions + describe_table) =='
+DO $$
+DECLARE r text;
+BEGIN
+  r := execute_tool('create_table', '{"name":"books","description":"Books I have read","columns":[{"name":"title","type":"text","description":"the book title","required":true},{"name":"rating","type":"int","description":"my rating out of 5"}]}'::jsonb);
+  ASSERT r LIKE '✅%', 'create_table with descriptions: '||r;
+  -- describe_table surfaces the table + column descriptions and the required flag
+  r := execute_tool('describe_table', '{"table":"books"}'::jsonb);
+  ASSERT r ILIKE '%Books I have read%', 'table description missing: '||r;
+  ASSERT r ILIKE '%the book title%',    'column description missing: '||r;
+  ASSERT r ILIKE '%title%(required)%',  'required flag missing: '||r;
+  -- list_tables now shows the table description
+  r := execute_tool('list_tables', '{}'::jsonb);
+  ASSERT r ILIKE '%books%Books I have read%', 'list_tables missing description: '||r;
+  -- inserts/queries still work normally
+  PERFORM execute_tool('insert_row', '{"table":"books","data":{"title":"Dune","rating":5}}'::jsonb);
+  r := execute_tool('query_rows', '{"table":"books","match":{"title":"Dune"}}'::jsonb);
+  ASSERT r ILIKE '%Dune%', 'query_rows after describe: '||r;
+  RAISE NOTICE 'Test O passed';
+END $$;
+
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

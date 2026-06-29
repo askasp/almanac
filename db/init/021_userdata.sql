@@ -60,7 +60,9 @@ CREATE OR REPLACE FUNCTION tool_create_table(p_args jsonb, p_thread_id bigint, p
 RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
   v_name text := lower(btrim(p_args->>'name'));
-  col jsonb; cname text; ctype text; coldefs text := ''; ddl text; n int := 0;
+  v_desc text := NULLIF(btrim(p_args->>'description'), '');
+  col jsonb; cname text; ctype text; cdesc text; creq boolean;
+  coldefs text := ''; comment_stmts text[] := '{}'; ddl text; audit text; s text; n int := 0;
 BEGIN
   IF NOT ud_ident_ok(v_name) THEN
     RETURN 'ERROR: invalid table name (use lowercase letters, digits and underscores)';
@@ -69,7 +71,7 @@ BEGIN
     RETURN 'A table "' || v_name || '" already exists. Use insert_row, or add_column to extend it.';
   END IF;
   IF jsonb_typeof(p_args->'columns') <> 'array' THEN
-    RETURN 'ERROR: columns must be an array of {name, type}';
+    RETURN 'ERROR: columns must be an array of {name, type, description}';
   END IF;
   FOR col IN SELECT value FROM jsonb_array_elements(p_args->'columns') LOOP
     cname := lower(btrim(col->>'name'));
@@ -80,24 +82,44 @@ BEGIN
       RETURN 'ERROR: unsupported type "' || COALESCE(col->>'type', '?') || '" for column ' || cname
         || ' (allowed: text, int, bigint, numeric, boolean, date, timestamptz, jsonb)';
     END IF;
-    coldefs := coldefs || format(', %I %s', cname, ctype);
+    creq := COALESCE((col->>'required')::boolean, false);
+    coldefs := coldefs || format(', %I %s%s', cname, ctype, CASE WHEN creq THEN ' NOT NULL' ELSE '' END);
+    cdesc := NULLIF(btrim(col->>'description'), '');
+    IF cdesc IS NOT NULL THEN
+      comment_stmts := comment_stmts || format('COMMENT ON COLUMN userdata.%I.%I IS %L', v_name, cname, cdesc);
+    END IF;
     n := n + 1;
   END LOOP;
   IF n = 0 THEN RETURN 'ERROR: at least one column is required'; END IF;
   ddl := format('CREATE TABLE userdata.%I (id bigserial PRIMARY KEY%s, created_at timestamptz NOT NULL DEFAULT now())',
                 v_name, coldefs);
   EXECUTE ddl;
-  INSERT INTO schema_migrations (name, ddl) VALUES ('create_table:' || v_name, ddl);
+  -- Self-describing: store the table + column descriptions as Postgres COMMENTs —
+  -- the introspectable, PostgREST-style home for them. %L quotes the literal, so
+  -- model text still never executes as SQL.
+  IF v_desc IS NOT NULL THEN
+    comment_stmts := array_prepend(format('COMMENT ON TABLE userdata.%I IS %L', v_name, v_desc), comment_stmts);
+  END IF;
+  audit := ddl;
+  FOREACH s IN ARRAY comment_stmts LOOP
+    EXECUTE s;
+    audit := audit || '; ' || s;
+  END LOOP;
+  INSERT INTO schema_migrations (name, ddl) VALUES ('create_table:' || v_name, audit);
   RETURN format('✅ Created table "%s" with %s column(s). Add data with insert_row.', v_name, n);
 END $$;
 SELECT register_tool('create_table', $$
 {"type":"function","function":{"name":"create_table",
- "description":"Create a new table to track a kind of structured data the user needs (e.g. workouts, expenses, plants). An id and created_at are added automatically. Afterwards use insert_row and query_rows.",
+ "description":"Create a table to track a kind of structured data the user needs (e.g. workouts, expenses, plants). Give the table a one-line description and describe each column (with units/examples), and mark a column required:true when it must always have a value — so you and other tools know later how to fill and query it. id and created_at are added automatically.",
  "parameters":{"type":"object","properties":{
    "name":{"type":"string","description":"table name, lowercase_with_underscores"},
-   "columns":{"type":"array","description":"columns as {name, type}; type is one of text, int, bigint, numeric, boolean, date, timestamptz, jsonb",
+   "description":{"type":"string","description":"one line on what this table is for"},
+   "columns":{"type":"array","description":"each column: name, type (text, int, bigint, numeric, boolean, date, timestamptz, jsonb), an optional description, and optional required:true",
      "items":{"type":"object","properties":{
-       "name":{"type":"string"},"type":{"type":"string"}},"required":["name","type"]}}},
+       "name":{"type":"string"},
+       "type":{"type":"string"},
+       "description":{"type":"string","description":"what the column means, with units/examples"},
+       "required":{"type":"boolean"}},"required":["name","type"]}}},
    "required":["name","columns"]}}}$$::jsonb, 80);
 
 -- list_tables ---------------------------------------------------------------
@@ -107,7 +129,8 @@ DECLARE out text;
 BEGIN
   SELECT string_agg(line, E'\n' ORDER BY tname) INTO out FROM (
     SELECT c.table_name AS tname,
-           format('- %s (%s)', c.table_name,
+           format('- %s%s (%s)', c.table_name,
+                  COALESCE(' — ' || obj_description(format('userdata.%I', c.table_name)::regclass, 'pg_class'), ''),
                   string_agg(c.column_name || ' ' || c.data_type, ', ' ORDER BY c.ordinal_position)
                   FILTER (WHERE c.column_name NOT IN ('id', 'created_at'))) AS line
     FROM information_schema.columns c
@@ -118,8 +141,42 @@ BEGIN
 END $$;
 SELECT register_tool('list_tables', $$
 {"type":"function","function":{"name":"list_tables",
- "description":"List the custom tables you have created and their columns.",
+ "description":"List the custom tables you have created, each with its description and columns.",
  "parameters":{"type":"object","properties":{}}}}$$::jsonb, 81);
+
+-- describe_table ------------------------------------------------------------
+-- The "read the docs" call: surfaces a table's description, columns, types,
+-- required flags and per-column meaning so the model knows how to use it.
+CREATE OR REPLACE FUNCTION tool_describe_table(p_args jsonb, p_thread_id bigint, p_run_id bigint)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  v_tbl text := lower(btrim(p_args->>'table'));
+  v_oid oid; v_tdesc text; cols text; n bigint;
+BEGIN
+  IF NOT ud_ident_ok(v_tbl) OR NOT ud_table_exists(v_tbl) THEN
+    RETURN 'ERROR: no such table "' || COALESCE(p_args->>'table', '?') || '"';
+  END IF;
+  v_oid   := format('userdata.%I', v_tbl)::regclass;
+  v_tdesc := obj_description(v_oid, 'pg_class');
+  SELECT string_agg(
+           format('  - %s %s%s%s', c.column_name, c.data_type,
+                  CASE WHEN c.is_nullable = 'NO' THEN ' (required)' ELSE '' END,
+                  COALESCE(' — ' || col_description(v_oid, c.ordinal_position), '')),
+           E'\n' ORDER BY c.ordinal_position)
+  INTO cols
+  FROM information_schema.columns c
+  WHERE c.table_schema = 'userdata' AND c.table_name = v_tbl
+    AND c.column_name NOT IN ('id', 'created_at');
+  EXECUTE format('SELECT count(*) FROM userdata.%I', v_tbl) INTO n;
+  RETURN format(E'%s%s\nColumns:\n%s\n(%s row(s) so far)',
+                v_tbl, COALESCE(' — ' || v_tdesc, ''),
+                COALESCE(cols, '  (none)'), n);
+END $$;
+SELECT register_tool('describe_table', $$
+{"type":"function","function":{"name":"describe_table",
+ "description":"Show a custom table's description and columns (type, whether required, and what each means) so you know how to insert or query it. Call this before using a table you didn't just create.",
+ "parameters":{"type":"object","properties":{
+   "table":{"type":"string"}},"required":["table"]}}}$$::jsonb, 82);
 
 -- insert_row ----------------------------------------------------------------
 CREATE OR REPLACE FUNCTION tool_insert_row(p_args jsonb, p_thread_id bigint, p_run_id bigint)
@@ -157,7 +214,7 @@ SELECT register_tool('insert_row', $$
  "parameters":{"type":"object","properties":{
    "table":{"type":"string"},
    "data":{"type":"object","description":"column: value pairs"}},
-   "required":["table","data"]}}}$$::jsonb, 82);
+   "required":["table","data"]}}}$$::jsonb, 83);
 
 -- query_rows ----------------------------------------------------------------
 CREATE OR REPLACE FUNCTION tool_query_rows(p_args jsonb, p_thread_id bigint, p_run_id bigint)
@@ -188,7 +245,7 @@ SELECT register_tool('query_rows', $$
    "table":{"type":"string"},
    "match":{"type":"object","description":"optional exact column: value filters"},
    "limit":{"type":"integer"}},
-   "required":["table"]}}}$$::jsonb, 83);
+   "required":["table"]}}}$$::jsonb, 84);
 
 -- add_column (ALTER; confirm required) --------------------------------------
 CREATE OR REPLACE FUNCTION tool_add_column(p_args jsonb, p_thread_id bigint, p_run_id bigint)
@@ -196,7 +253,8 @@ RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
   v_tbl text := lower(btrim(p_args->>'table'));
   v_col text := lower(btrim(p_args->>'name'));
-  v_type text := ud_coltype(p_args->>'type'); ddl text;
+  v_type text := ud_coltype(p_args->>'type');
+  v_desc text := NULLIF(btrim(p_args->>'description'), ''); ddl text;
 BEGIN
   IF (p_args->>'confirm')::boolean IS NOT TRUE THEN
     RETURN 'This will alter table "' || COALESCE(v_tbl, '?') || '". Confirm with the user, then call again with confirm=true.';
@@ -206,15 +264,20 @@ BEGIN
   IF v_type IS NULL THEN RETURN 'ERROR: unsupported type'; END IF;
   ddl := format('ALTER TABLE userdata.%I ADD COLUMN IF NOT EXISTS %I %s', v_tbl, v_col, v_type);
   EXECUTE ddl;
+  IF v_desc IS NOT NULL THEN
+    EXECUTE format('COMMENT ON COLUMN userdata.%I.%I IS %L', v_tbl, v_col, v_desc);
+    ddl := ddl || format('; COMMENT ON COLUMN userdata.%I.%I IS %L', v_tbl, v_col, v_desc);
+  END IF;
   INSERT INTO schema_migrations (name, ddl) VALUES ('add_column:' || v_tbl || '.' || v_col, ddl);
   RETURN format('✅ Added column %s to %s.', v_col, v_tbl);
 END $$;
 SELECT register_tool('add_column', $$
 {"type":"function","function":{"name":"add_column",
- "description":"Add a column to an existing custom table. Destructive schema change: confirm with the user first, then call with confirm=true.",
+ "description":"Add a column to an existing custom table, optionally with a description of what it means. Schema change: confirm with the user first, then call with confirm=true.",
  "parameters":{"type":"object","properties":{
    "table":{"type":"string"},"name":{"type":"string"},"type":{"type":"string"},
-   "confirm":{"type":"boolean"}},"required":["table","name","type"]}}}$$::jsonb, 84);
+   "description":{"type":"string","description":"what the new column means"},
+   "confirm":{"type":"boolean"}},"required":["table","name","type"]}}}$$::jsonb, 85);
 
 -- drop_table (DROP; confirm required) ---------------------------------------
 CREATE OR REPLACE FUNCTION tool_drop_table(p_args jsonb, p_thread_id bigint, p_run_id bigint)
@@ -234,4 +297,4 @@ SELECT register_tool('drop_table', $$
 {"type":"function","function":{"name":"drop_table",
  "description":"Permanently delete a custom table and all its rows. Destructive: confirm with the user first, then call with confirm=true.",
  "parameters":{"type":"object","properties":{
-   "table":{"type":"string"},"confirm":{"type":"boolean"}},"required":["table"]}}}$$::jsonb, 85);
+   "table":{"type":"string"},"confirm":{"type":"boolean"}},"required":["table"]}}}$$::jsonb, 86);
