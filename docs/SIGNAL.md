@@ -91,6 +91,22 @@ Then `docker compose up -d --build` and DM the bot's number from your Signal.
 
 ---
 
+## Team — multiple people, one shared instance
+
+Want several people on **one shared Almanac** (shared knowledge base / todos / calendar /
+notes) but each chatting **privately**? Use team mode with the **dedicated‑number** setup
+(Option B) — not QR linking, not a group:
+
+1. Register one team number (Option B), then set `TEAM_MODE=on`, `CHANNEL=signal`,
+   `SIGNAL_MODE=number`, and leave `SIGNAL_GROUP_ID` empty.
+2. List each member's number digits (no `+`) in `ALLOWED_CHAT_IDS` — that's your roster.
+3. Each member adds the team number and **DMs it from their own Signal**. The bot identifies
+   them by phone number, attributes their entries (you'll see "· Alice" on shared todos), and
+   replies to each **privately**. The morning summary DMs each member their own inbox.
+
+Everything is shared except email/credentials, which stay per‑member — and there's **no group
+chat**, every conversation is 1:1.
+
 ## Verify / operate
 
 ```bash

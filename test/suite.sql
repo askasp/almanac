@@ -489,5 +489,32 @@ SELECT set_cfg('channel','telegram');   -- restore defaults
 SELECT set_cfg('signal_mode','self');
 SELECT set_cfg('signal_group_id','');
 
+\echo '== Test R: signal team mode (individual DMs, shared instance, attributed) =='
+SELECT set_cfg('team_mode','on');
+SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_mode','number');
+SELECT set_cfg('signal_group_id','');
+SELECT set_cfg('signal_base_url','http://signal');
+SELECT set_cfg('signal_number','+15550005555');
+UPDATE messages SET status='done' WHERE status='pending';
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('v1/receive','[{"envelope":{"source":"+15551110000","sourceNumber":"+15551110000","sourceName":"Alice","timestamp":1700000400000,"dataMessage":{"timestamp":1700000400000,"message":"alice note"}}},{"envelope":{"source":"+15552220000","sourceNumber":"+15552220000","sourceName":"Bob","timestamp":1700000401000,"dataMessage":{"timestamp":1700000401000,"message":"bob note"}}}]');
+DO $$
+DECLARE n bigint; aid bigint; bid bigint;
+BEGIN
+  PERFORM inbound_poll();                                  -- routes to the team-aware signal_poll
+  SELECT id INTO aid FROM members WHERE tg_user_id=15551110000;
+  SELECT id INTO bid FROM members WHERE tg_user_id=15552220000;
+  ASSERT aid IS NOT NULL AND bid IS NOT NULL, 'both signal members should be created by phone number';
+  SELECT member_id INTO n FROM messages WHERE content='alice note'; ASSERT n=aid, 'alice message not attributed to her member';
+  SELECT member_id INTO n FROM messages WHERE content='bob note';   ASSERT n=bid, 'bob message not attributed to his member';
+  SELECT count(DISTINCT thread_id) INTO n FROM messages WHERE content IN ('alice note','bob note');
+  ASSERT n=2, 'each member should get their own private thread, got '||n;
+  RAISE NOTICE 'Test R passed';
+END $$;
+SELECT set_cfg('team_mode','off');   -- restore defaults
+SELECT set_cfg('channel','telegram');
+SELECT set_cfg('signal_mode','self');
+
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

@@ -170,6 +170,123 @@ BEGIN
   RETURN cnt;
 END $$;
 
+-- signal_poll, team-aware. Personal behaviour (group/self/number) is byte-for-
+-- byte the 023 version; in team mode the bot uses one shared dedicated number
+-- that each member DMs INDIVIDUALLY (no group chat). We identify the member by
+-- their phone number, attribute their rows, and reply to each privately. The KB
+-- and todos/calendar/notes stay one shared database; only email is per-member.
+CREATE OR REPLACE FUNCTION signal_poll()
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  base text := cfg('signal_base_url'); num text := cfg('signal_number');
+  mode text := cfg('signal_mode','self'); grp text := cfg('signal_group_id');
+  team boolean := cfg('team_mode','off') = 'on';
+  self_digits text := NULLIF(regexp_replace(COALESCE(num,''), '\D', '', 'g'), '');
+  resp http_response; arr jsonb; e jsonb; dm jsonb; sm jsonb; obj jsonb;
+  v_src text; v_digits bigint; v_text text; v_ts bigint; v_reply bigint;
+  v_name text; v_member bigint;
+  v_thread bigint; v_slug text; v_content text; cnt int := 0;
+BEGIN
+  IF cfg('poll_enabled','on') <> 'on' OR num IS NULL OR num = '' THEN RETURN 0; END IF;
+  BEGIN
+    resp := almanac_http_get(base || '/v1/receive/' || urlencode(num));
+  EXCEPTION WHEN others THEN RETURN 0; END;
+  IF resp.status NOT BETWEEN 200 AND 299 THEN RETURN 0; END IF;
+  arr := safe_jsonb(resp.content);
+  IF jsonb_typeof(arr) <> 'array' THEN RETURN 0; END IF;
+
+  FOR e IN SELECT value FROM jsonb_array_elements(arr) LOOP
+    v_text := NULL; v_digits := NULL; v_ts := NULL; v_reply := NULL; obj := NULL; v_member := NULL;
+    dm := e->'envelope'->'dataMessage';
+    sm := e->'envelope'->'syncMessage'->'sentMessage';
+
+    IF team THEN
+      -- Shared dedicated number: each member DMs it individually. Identify the
+      -- member by phone; the reply routes back to them (tg_chat_id = digits).
+      IF dm IS NOT NULL AND dm->'groupInfo' IS NULL THEN
+        v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
+        IF v_src ~ '^\+[0-9]+$' THEN
+          obj := dm;
+          v_digits := replace(v_src, '+', '')::bigint;
+          v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+          v_name := NULLIF(btrim(e->'envelope'->>'sourceName'), '');
+          v_member := upsert_member(v_digits, COALESCE(v_name, v_src), v_digits);
+        END IF;
+      END IF;
+    ELSIF grp <> '' THEN
+      IF sm IS NOT NULL AND (sm->'groupInfo'->>'groupId') = grp THEN
+        obj := sm;
+      ELSIF dm IS NOT NULL AND (dm->'groupInfo'->>'groupId') = grp THEN
+        obj := dm;
+      END IF;
+      IF obj IS NOT NULL THEN
+        v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
+        v_digits := NULLIF(regexp_replace(COALESCE(v_src, ''), '\D','','g'), '')::bigint;
+        v_ts := COALESCE((obj->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+      END IF;
+    ELSIF mode = 'self' THEN
+      IF sm IS NOT NULL AND sm->'groupInfo' IS NULL
+         AND regexp_replace(COALESCE(sm->>'destinationNumber', sm->>'destination', ''), '\D','','g') = self_digits THEN
+        obj := sm;
+        v_ts := COALESCE((sm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+      ELSIF dm IS NOT NULL AND dm->'groupInfo' IS NULL
+            AND regexp_replace(COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source', ''), '\D','','g') = self_digits THEN
+        obj := dm;
+        v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+      END IF;
+      v_digits := self_digits::bigint;
+    ELSE
+      IF dm IS NOT NULL AND dm->'groupInfo' IS NULL THEN
+        v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
+        IF v_src ~ '^\+[0-9]+$' THEN
+          obj := dm;
+          v_digits := replace(v_src, '+', '')::bigint;
+          v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+        END IF;
+      END IF;
+    END IF;
+
+    CONTINUE WHEN obj IS NULL;
+    v_text := obj->>'message';
+    CONTINUE WHEN v_text IS NULL OR btrim(v_text) = '' OR v_digits IS NULL;
+    CONTINUE WHEN NOT tg_allowed(v_digits, v_digits);
+    CONTINUE WHEN EXISTS (SELECT 1 FROM messages WHERE tg_chat_id = v_digits AND tg_message_id = v_ts);
+    v_reply := NULLIF(obj->'quote'->>'id', '')::bigint;
+    v_content := v_text; v_thread := NULL;
+
+    IF lower(btrim(v_text)) ~ '^/new(\s|$)' THEN
+      v_thread := new_thread('new');
+    END IF;
+    IF v_thread IS NULL AND v_reply IS NOT NULL THEN
+      SELECT thread_id INTO v_thread FROM messages WHERE tg_message_id = v_reply LIMIT 1;
+    END IF;
+    IF v_thread IS NULL AND v_text ~ '^#[A-Za-z0-9]+(\s|$)' THEN
+      v_slug := lower(substring(v_text FROM '^#([A-Za-z0-9]+)'));
+      SELECT id INTO v_thread FROM threads WHERE slug = v_slug;
+      IF v_thread IS NOT NULL THEN
+        v_content := btrim(regexp_replace(v_text, '^#[A-Za-z0-9]+\s*', ''));
+      END IF;
+    END IF;
+    IF v_thread IS NULL THEN
+      SELECT id INTO v_thread FROM threads
+      WHERE status = 'active'
+        AND member_id IS NOT DISTINCT FROM v_member
+        AND last_message_at >= now() - (cfg('session_window_minutes','30') || ' minutes')::interval
+      ORDER BY last_message_at DESC LIMIT 1;
+    END IF;
+    IF v_thread IS NULL THEN
+      v_thread := new_thread(left(v_content, 60));
+      IF v_member IS NOT NULL THEN UPDATE threads SET member_id = v_member WHERE id = v_thread; END IF;
+    END IF;
+
+    INSERT INTO messages (thread_id, role, content, status, tg_chat_id, tg_message_id, reply_to_tg_message_id, member_id)
+    VALUES (v_thread, 'user', v_content, 'pending', v_digits, v_ts, v_reply, v_member);
+    UPDATE threads SET last_message_at = now() WHERE id = v_thread;
+    cnt := cnt + 1;
+  END LOOP;
+  RETURN cnt;
+END $$;
+
 -- process_pending, now setting the per-message member context ----------------
 -- Identical to 014 plus: set almanac.current_member (transaction-local) so the
 -- attribution trigger stamps new rows, and carry member_id onto the reply.
