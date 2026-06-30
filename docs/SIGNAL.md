@@ -16,8 +16,9 @@ There are two ways to give it a Signal identity. **Pick one:**
 | How you chat with it | In your **"Note to Self"** | You DM the bot's number |
 | What it can see | Only your Note to Self | Direct messages to the bot |
 
-> **v1 scope:** 1:1 only (no groups); threading is session-window / `#slug` / `/new` (no
-> quote-reply); recipients are phone numbers (no usernames/UUIDs).
+> **v1 scope:** 1:1 only (no groups); recipients are phone numbers (no usernames/UUIDs).
+> Threading works like Telegram: the session window, `#slug`, `/new`, and **reply/quote** a
+> message to continue its thread.
 
 ---
 

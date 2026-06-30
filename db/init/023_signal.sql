@@ -9,7 +9,8 @@
 -- digits (no '+') in messages.tg_chat_id (a bigint — every E.164 number fits)
 -- and re-add '+' when sending, so every existing notify path (replies, daily
 -- summary, reminders, pipelines) routes to Signal unchanged. v1 is 1:1 only (no
--- groups) and uses session-window / #slug / /new threading (no quote-reply).
+-- groups); threading matches Telegram — session-window, #slug, /new, and
+-- reply/quote a message to continue its thread.
 -- ===========================================================================
 
 SELECT set_cfg('channel',         'telegram');           -- 'telegram' | 'signal'
@@ -20,14 +21,21 @@ SELECT set_cfg('signal_mode',     'self');               -- 'self' (QR-paired, N
 -- Outbound to Signal. p_chat_id is the recipient's number digits; we re-add '+'.
 CREATE OR REPLACE FUNCTION signal_send(p_chat_id bigint, p_text text)
 RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE base text := cfg('signal_base_url'); num text := cfg('signal_number'); resp http_response;
+DECLARE base text := cfg('signal_base_url'); num text := cfg('signal_number'); resp http_response; ts text;
 BEGIN
   IF base IS NULL OR num IS NULL OR num = '' THEN RETURN NULL; END IF;
   resp := almanac_http_post(base || '/v2/send', jsonb_build_object(
             'message',    left(COALESCE(p_text, ''), 4000),
             'number',     num,
             'recipients', jsonb_build_array('+' || p_chat_id)));
-  RETURN NULL;   -- Signal has no per-message id we thread replies on
+  -- Return the sent message's timestamp (Signal's message id). Stored on the
+  -- assistant row so the user can quote-reply to it to continue the thread, and
+  -- so the idempotency guard drops any echo of our own send.
+  IF resp.status BETWEEN 200 AND 299 THEN
+    ts := safe_jsonb(resp.content)->>'timestamp';
+    IF ts ~ '^[0-9]+$' THEN RETURN ts::bigint; END IF;
+  END IF;
+  RETURN NULL;
 END $$;
 
 -- tg_send becomes the channel-aware sender: Signal when channel='signal', else
@@ -57,8 +65,8 @@ DECLARE
   base text := cfg('signal_base_url'); num text := cfg('signal_number');
   mode text := cfg('signal_mode','self');
   self_digits text := NULLIF(regexp_replace(COALESCE(num,''), '\D', '', 'g'), '');
-  resp http_response; arr jsonb; e jsonb; dm jsonb; sm jsonb;
-  v_src text; v_digits bigint; v_text text; v_ts bigint;
+  resp http_response; arr jsonb; e jsonb; dm jsonb; sm jsonb; obj jsonb;
+  v_src text; v_digits bigint; v_text text; v_ts bigint; v_reply bigint;
   v_thread bigint; v_slug text; v_content text; cnt int := 0;
 BEGIN
   IF cfg('poll_enabled','on') <> 'on' OR num IS NULL OR num = '' THEN RETURN 0; END IF;
@@ -70,40 +78,50 @@ BEGIN
   IF jsonb_typeof(arr) <> 'array' THEN RETURN 0; END IF;
 
   FOR e IN SELECT value FROM jsonb_array_elements(arr) LOOP
-    v_text := NULL; v_digits := NULL; v_ts := NULL;
+    v_text := NULL; v_digits := NULL; v_ts := NULL; v_reply := NULL; obj := NULL;
     dm := e->'envelope'->'dataMessage';
     sm := e->'envelope'->'syncMessage'->'sentMessage';
 
     IF mode = 'self' THEN
+      -- Only your own Note-to-Self: a note sent from your phone (sync sentMessage
+      -- to your number), or a dataMessage from yourself. Contacts are ignored.
       IF sm IS NOT NULL AND sm->'groupInfo' IS NULL
          AND regexp_replace(COALESCE(sm->>'destinationNumber', sm->>'destination', ''), '\D','','g') = self_digits THEN
-        v_text := sm->>'message';
+        obj := sm;
         v_ts := COALESCE((sm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
       ELSIF dm IS NOT NULL AND dm->'groupInfo' IS NULL
             AND regexp_replace(COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source', ''), '\D','','g') = self_digits THEN
-        v_text := dm->>'message';
+        obj := dm;
         v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
       END IF;
       v_digits := self_digits::bigint;                 -- reply lands in your Note to Self
     ELSE
+      -- Dedicated number: read direct messages from the sender.
       IF dm IS NOT NULL AND dm->'groupInfo' IS NULL THEN
         v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
         IF v_src ~ '^\+[0-9]+$' THEN
-          v_text := dm->>'message';
+          obj := dm;
           v_digits := replace(v_src, '+', '')::bigint;
           v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
         END IF;
       END IF;
     END IF;
 
+    CONTINUE WHEN obj IS NULL;
+    v_text := obj->>'message';
     CONTINUE WHEN v_text IS NULL OR btrim(v_text) = '' OR v_digits IS NULL;
     CONTINUE WHEN NOT tg_allowed(v_digits, v_digits);  -- allowlist: list digits, no '+'
     CONTINUE WHEN EXISTS (SELECT 1 FROM messages         -- idempotent receive (no re-processing / echo)
                           WHERE tg_chat_id = v_digits AND tg_message_id = v_ts);
+    v_reply := NULLIF(obj->'quote'->>'id', '')::bigint;  -- the quoted message's id, if any
     v_content := v_text; v_thread := NULL;
 
+    -- thread resolution, same precedence as Telegram: /new, quote-reply, #slug, window
     IF lower(btrim(v_text)) ~ '^/new(\s|$)' THEN
       v_thread := new_thread('new');
+    END IF;
+    IF v_thread IS NULL AND v_reply IS NOT NULL THEN
+      SELECT thread_id INTO v_thread FROM messages WHERE tg_message_id = v_reply LIMIT 1;
     END IF;
     IF v_thread IS NULL AND v_text ~ '^#[A-Za-z0-9]+(\s|$)' THEN
       v_slug := lower(substring(v_text FROM '^#([A-Za-z0-9]+)'));
@@ -122,8 +140,8 @@ BEGIN
       v_thread := new_thread(left(v_content, 60));
     END IF;
 
-    INSERT INTO messages (thread_id, role, content, status, tg_chat_id, tg_message_id)
-    VALUES (v_thread, 'user', v_content, 'pending', v_digits, v_ts);
+    INSERT INTO messages (thread_id, role, content, status, tg_chat_id, tg_message_id, reply_to_tg_message_id)
+    VALUES (v_thread, 'user', v_content, 'pending', v_digits, v_ts, v_reply);
     UPDATE threads SET last_message_at = now() WHERE id = v_thread;
     cnt := cnt + 1;
   END LOOP;

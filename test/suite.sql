@@ -433,5 +433,33 @@ END $$;
 SELECT set_cfg('channel','telegram');   -- restore defaults
 SELECT set_cfg('signal_mode','self');
 
+\echo '== Test Q3: signal reply-to-continue (quote keeps the thread) =='
+SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_mode','number');
+SELECT set_cfg('signal_base_url','http://signal');
+SELECT set_cfg('signal_number','+15550002222');
+UPDATE messages SET status='done' WHERE status='pending';
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('v1/receive','[{"envelope":{"sourceNumber":"+15551234567","timestamp":1700000100000,"dataMessage":{"timestamp":1700000100000,"message":"track my project"}}}]'),
+ ('chat/completions','{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok, tracking"}}]}'),
+ ('v2/send','{"timestamp":1700000111111}'),
+ ('v1/receive','[{"envelope":{"sourceNumber":"+15551234567","timestamp":1700000200000,"dataMessage":{"timestamp":1700000200000,"message":"deadline is friday","quote":{"id":1700000111111,"author":"+15550002222"}}}}]');
+DO $$
+DECLARE t1 bigint; t2 bigint; amid bigint;
+BEGIN
+  PERFORM inbound_poll();                              -- first message
+  PERFORM process_pending();                           -- bot replies; assistant stores tg_message_id=1700000111111
+  SELECT tg_message_id INTO amid FROM messages WHERE role='assistant' ORDER BY id DESC LIMIT 1;
+  ASSERT amid=1700000111111, 'assistant reply did not store the signal send timestamp: '||COALESCE(amid::text,'(null)');
+  SELECT thread_id INTO t1 FROM messages WHERE content='track my project';
+  UPDATE threads SET last_message_at = now() - interval '1 hour';   -- age all threads out of the session window
+  PERFORM inbound_poll();                              -- second message quotes the bot's reply
+  SELECT thread_id INTO t2 FROM messages WHERE content='deadline is friday';
+  ASSERT t2=t1, 'quoted reply did not continue the same thread (t1='||t1||', t2='||t2||')';
+  RAISE NOTICE 'Test Q3 passed';
+END $$;
+SELECT set_cfg('channel','telegram');   -- restore defaults
+SELECT set_cfg('signal_mode','self');
+
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'
