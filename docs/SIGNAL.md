@@ -16,9 +16,9 @@ There are two ways to give it a Signal identity. **Pick one:**
 | How you chat with it | In your **"Note to Self"** | You DM the bot's number |
 | What it can see | Only your Note to Self | Direct messages to the bot |
 
-> **v1 scope:** 1:1 only (no groups); recipients are phone numbers (no usernames/UUIDs).
-> Threading works like Telegram: the session window, `#slug`, `/new`, and **reply/quote** a
-> message to continue its thread.
+> **v1 scope:** one conversation — a **designated group** (recommended) or 1:1; recipients
+> are phone numbers (no usernames/UUIDs). Threading works like Telegram: the session window,
+> `#slug`, `/new`, and **reply/quote** a message to continue its thread.
 
 ---
 
@@ -46,6 +46,21 @@ conversations.
    ```
 4. `docker compose up -d --build`, then open your **Note to Self** chat in Signal and say
    "hi". Almanac replies right there.
+
+**Even cleaner — give it a dedicated group (recommended).** Rather than reusing Note to
+Self, make a Signal group with just you so Almanac has its own chat. With the sidecar
+already paired:
+
+```bash
+# create a self-only group, then read back its id
+curl -X POST 'http://localhost:8080/v1/groups/+4799999999' \
+  -H 'Content-Type: application/json' -d '{"name":"Almanac","members":[]}'
+curl 'http://localhost:8080/v1/groups/+4799999999'      # copy the group's "id"
+```
+
+Set `SIGNAL_GROUP_ID=<that id>` in `.env` (it overrides `SIGNAL_MODE`). Almanac now reacts
+**only** to that group and replies there — every other chat, including Note to Self, is
+ignored. (Reply/quote a message in the group to continue its thread.)
 
 ---
 
@@ -104,3 +119,6 @@ docker compose exec -T db psql -U almanac -d almanac -c \
   worst case is "the bot stays quiet," never "the bot answers my contacts."
 - Exact Note-to-Self delivery can vary slightly by signal-cli version. If `self` mode never
   ingests your messages, check `docker compose logs signal` and try Option B as a fallback.
+- For a designated group, `SIGNAL_GROUP_ID` must match the `groupId` in received messages and
+  be accepted as a send recipient — normally the same string from `GET /v1/groups`. If group
+  mode stays quiet, check `docker compose logs signal` for the exact `groupId` and use that.

@@ -44,5 +44,6 @@ set_cfg allowed_chat_ids "${ALLOWED_CHAT_IDS:-}"
 set_cfg channel          "${CHANNEL:-}"
 set_cfg signal_mode      "${SIGNAL_MODE:-}"
 set_cfg signal_number    "${SIGNAL_NUMBER:-}"
+set_cfg signal_group_id  "${SIGNAL_GROUP_ID:-}"
 
 echo "[almanac] bootstrap complete."

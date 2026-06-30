@@ -461,5 +461,33 @@ END $$;
 SELECT set_cfg('channel','telegram');   -- restore defaults
 SELECT set_cfg('signal_mode','self');
 
+\echo '== Test Q4: signal designated group (reacts only to that group, replies there) =='
+SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_mode','self');
+SELECT set_cfg('signal_base_url','http://signal');
+SELECT set_cfg('signal_number','+15550003333');
+SELECT set_cfg('signal_group_id','group.MYALMANAC==');
+UPDATE messages SET status='done' WHERE status='pending';
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('v1/receive', '[{"envelope":{"source":"+15550003333","sourceNumber":"+15550003333","timestamp":1700000300000,"syncMessage":{"sentMessage":{"timestamp":1700000300000,"message":"in my group","groupInfo":{"groupId":"group.MYALMANAC=="}}}}},{"envelope":{"source":"+15557776666","sourceNumber":"+15557776666","timestamp":1700000301000,"dataMessage":{"timestamp":1700000301000,"message":"random dm"}}},{"envelope":{"source":"+15550003333","sourceNumber":"+15550003333","timestamp":1700000302000,"syncMessage":{"sentMessage":{"timestamp":1700000302000,"message":"other group msg","groupInfo":{"groupId":"group.OTHER=="}}}}}]'),
+ ('chat/completions','{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"got it"}}]}'),
+ ('v2/send','{"timestamp":1700000311111}');
+DO $$
+DECLARE n bigint;
+BEGIN
+  PERFORM inbound_poll();
+  SELECT count(*) INTO n FROM messages WHERE content='in my group' AND status='pending';
+  ASSERT n=1, 'designated-group message not ingested: '||n;
+  SELECT count(*) INTO n FROM messages WHERE content IN ('random dm','other group msg');
+  ASSERT n=0, 'group mode must ignore DMs and other groups, got '||n;
+  PERFORM process_pending();
+  SELECT count(*) INTO n FROM http_mock_queue WHERE seen_uri ILIKE '%v2/send%' AND seen_body ILIKE '%group.MYALMANAC%';
+  ASSERT n>=1, 'reply not routed to the designated group';
+  RAISE NOTICE 'Test Q4 passed';
+END $$;
+SELECT set_cfg('channel','telegram');   -- restore defaults
+SELECT set_cfg('signal_mode','self');
+SELECT set_cfg('signal_group_id','');
+
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

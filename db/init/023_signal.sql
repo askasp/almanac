@@ -8,26 +8,30 @@
 -- where tg_send routes. Signal addresses are E.164 phone numbers; we store the
 -- digits (no '+') in messages.tg_chat_id (a bigint — every E.164 number fits)
 -- and re-add '+' when sending, so every existing notify path (replies, daily
--- summary, reminders, pipelines) routes to Signal unchanged. v1 is 1:1 only (no
--- groups); threading matches Telegram — session-window, #slug, /new, and
--- reply/quote a message to continue its thread.
+-- summary, reminders, pipelines) routes to Signal unchanged. v1 talks in ONE
+-- conversation: a designated group (signal_group_id) if set, else 1:1 — Note-to-
+-- Self in 'self' mode, or the bot's own number in 'number' mode. Threading
+-- matches Telegram — session-window, #slug, /new, and reply/quote to continue.
 -- ===========================================================================
 
 SELECT set_cfg('channel',         'telegram');           -- 'telegram' | 'signal'
 SELECT set_cfg('signal_base_url', 'http://signal:8080');
 SELECT set_cfg('signal_number',   '');                   -- the account's number, e.g. +4712345678
 SELECT set_cfg('signal_mode',     'self');               -- 'self' (QR-paired, Note-to-Self) | 'number' (dedicated bot number)
+SELECT set_cfg('signal_group_id', '');                   -- if set: react ONLY to this group and reply there (overrides mode)
 
 -- Outbound to Signal. p_chat_id is the recipient's number digits; we re-add '+'.
 CREATE OR REPLACE FUNCTION signal_send(p_chat_id bigint, p_text text)
 RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE base text := cfg('signal_base_url'); num text := cfg('signal_number'); resp http_response; ts text;
+DECLARE base text := cfg('signal_base_url'); num text := cfg('signal_number');
+        grp text := cfg('signal_group_id'); resp http_response; ts text;
 BEGIN
   IF base IS NULL OR num IS NULL OR num = '' THEN RETURN NULL; END IF;
   resp := almanac_http_post(base || '/v2/send', jsonb_build_object(
             'message',    left(COALESCE(p_text, ''), 4000),
             'number',     num,
-            'recipients', jsonb_build_array('+' || p_chat_id)));
+            'recipients', CASE WHEN COALESCE(grp,'') <> '' THEN jsonb_build_array(grp)
+                               ELSE jsonb_build_array('+' || p_chat_id) END));
   -- Return the sent message's timestamp (Signal's message id). Stored on the
   -- assistant row so the user can quote-reply to it to continue the thread, and
   -- so the idempotency guard drops any echo of our own send.
@@ -63,7 +67,7 @@ CREATE OR REPLACE FUNCTION signal_poll()
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
   base text := cfg('signal_base_url'); num text := cfg('signal_number');
-  mode text := cfg('signal_mode','self');
+  mode text := cfg('signal_mode','self'); grp text := cfg('signal_group_id');
   self_digits text := NULLIF(regexp_replace(COALESCE(num,''), '\D', '', 'g'), '');
   resp http_response; arr jsonb; e jsonb; dm jsonb; sm jsonb; obj jsonb;
   v_src text; v_digits bigint; v_text text; v_ts bigint; v_reply bigint;
@@ -82,7 +86,21 @@ BEGIN
     dm := e->'envelope'->'dataMessage';
     sm := e->'envelope'->'syncMessage'->'sentMessage';
 
-    IF mode = 'self' THEN
+    IF grp <> '' THEN
+      -- Designated group: only this group — your own sends (sync sentMessage with
+      -- this group, in QR-linked mode) or a dataMessage to the group otherwise.
+      -- The reply goes back to the group (signal_send routes by signal_group_id).
+      IF sm IS NOT NULL AND (sm->'groupInfo'->>'groupId') = grp THEN
+        obj := sm;
+      ELSIF dm IS NOT NULL AND (dm->'groupInfo'->>'groupId') = grp THEN
+        obj := dm;
+      END IF;
+      IF obj IS NOT NULL THEN
+        v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
+        v_digits := NULLIF(regexp_replace(COALESCE(v_src, ''), '\D','','g'), '')::bigint;
+        v_ts := COALESCE((obj->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+      END IF;
+    ELSIF mode = 'self' THEN
       -- Only your own Note-to-Self: a note sent from your phone (sync sentMessage
       -- to your number), or a dataMessage from yourself. Contacts are ignored.
       IF sm IS NOT NULL AND sm->'groupInfo' IS NULL
@@ -96,7 +114,7 @@ BEGIN
       END IF;
       v_digits := self_digits::bigint;                 -- reply lands in your Note to Self
     ELSE
-      -- Dedicated number: read direct messages from the sender.
+      -- Dedicated number: read direct messages from the sender (no group).
       IF dm IS NOT NULL AND dm->'groupInfo' IS NULL THEN
         v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
         IF v_src ~ '^\+[0-9]+$' THEN
