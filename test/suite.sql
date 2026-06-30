@@ -42,6 +42,7 @@ SELECT set_cfg('opencode_base_url','http://opencode');
 SELECT set_secret('telegram_token','TESTTOKEN');
 SELECT set_secret('llm_api_key','x');
 SELECT set_secret('embed_api_key','x');
+SELECT set_cfg('channel','telegram');   -- default is now 'signal'; the A–M tests exercise Telegram
 
 \echo ''
 \echo '== Test A: core tools (record/recall) =='
@@ -198,8 +199,8 @@ DO $$
 DECLARE n int;
 BEGIN
   SELECT count(*) INTO n FROM cron.job WHERE jobname IN
-    ('almanac-poll','almanac-process','almanac-kb','almanac-code','almanac-remind','almanac-daily','almanac-cleanup');
-  ASSERT n=7, 'expected 7 standing jobs, got '||n;
+    ('almanac-poll','almanac-process','almanac-kb','almanac-code','almanac-remind','almanac-daily','almanac-cleanup','almanac-signal');
+  ASSERT n=8, 'expected 8 standing jobs, got '||n;
   RAISE NOTICE 'Test I passed';
 END $$;
 
@@ -515,6 +516,27 @@ END $$;
 SELECT set_cfg('team_mode','off');   -- restore defaults
 SELECT set_cfg('channel','telegram');
 SELECT set_cfg('signal_mode','self');
+
+\echo '== Test S: signal auto-discovers number + auto-creates the Almanac group =='
+SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_base_url','http://signal');
+SELECT set_cfg('signal_number','');
+SELECT set_cfg('signal_group_id','');
+SELECT set_cfg('signal_auto_group','on');
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('v1/accounts','["+15551112222"]'),
+ ('v1/groups','[]'),                              -- GET: no Almanac group yet
+ ('v1/groups','{"id":"group.NEWALMANAC=="}');     -- POST: created
+DO $$
+BEGIN
+  PERFORM signal_ensure();
+  ASSERT cfg('signal_number')='+15551112222', 'number not auto-discovered: '||COALESCE(cfg('signal_number'),'(null)');
+  ASSERT cfg('signal_group_id')='group.NEWALMANAC==', 'group not auto-created/found: '||COALESCE(cfg('signal_group_id'),'(null)');
+  RAISE NOTICE 'Test S passed';
+END $$;
+SELECT set_cfg('channel','telegram');   -- restore defaults
+SELECT set_cfg('signal_number','');
+SELECT set_cfg('signal_group_id','');
 
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

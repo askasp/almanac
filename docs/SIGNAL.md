@@ -1,140 +1,82 @@
-# Using Signal instead of Telegram
+# Signal (the default channel)
 
-Almanac can talk over **Signal**. A `bbernhard/signal-cli-rest-api` sidecar (bundled in
-`docker-compose.yml` as the `signal` service) holds the Signal identity and exposes HTTP;
-Postgres polls it (`GET /v1/receive`) and sends through it (`POST /v2/send`) exactly the
-way it uses the Telegram Bot API. You flip one config value — `channel=signal` — and every
-feature (replies, daily summary, reminders, pipelines, the GitHub digest) routes to Signal
-unchanged, because they all go through the same channel-aware sender.
+Almanac talks over **Signal** by default, through a bundled `signal-cli-rest-api`
+sidecar that Postgres polls over HTTP. It's **self-configuring**: you pair it to your
+Signal once by QR, and it auto-detects your number and auto-creates a private **"Almanac"**
+group it chats in. There's nothing to put in `.env` for Signal beyond `CHANNEL=signal`.
 
-There are two ways to give it a Signal identity. **Pick one:**
+> **Scope:** one private conversation (the Almanac group), 1:1. Threading works like
+> Telegram — session window, `#slug`, `/new`, and reply/quote a message to continue it.
 
-| | `SIGNAL_MODE=self` (recommended) | `SIGNAL_MODE=number` |
-|---|---|---|
-| Setup | **Scan a QR** with your Signal app | Register a **separate** number (+ captcha) |
-| Needs a spare number? | **No** | Yes (one that can receive SMS, not on Signal) |
-| How you chat with it | In your **"Note to Self"** | You DM the bot's number |
-| What it can see | Only your Note to Self | Direct messages to the bot |
-
-> **v1 scope:** one conversation — a **designated group** (recommended) or 1:1; recipients
-> are phone numbers (no usernames/UUIDs). Threading works like Telegram: the session window,
-> `#slug`, `/new`, and **reply/quote** a message to continue its thread.
-
----
-
-## Option A — pair by QR (recommended, no spare number)
-
-The sidecar becomes a **linked device** on *your* Signal account (like Signal Desktop), and
-Almanac only ever reads/writes your **Note to Self** chat — it ignores all your other
-conversations.
-
-1. Bring up just the sidecar (port 8080 is published for pairing):
-   ```bash
-   docker compose up -d signal
-   ```
-2. Get the linking QR and scan it:
-   ```bash
-   curl 'http://localhost:8080/v1/qrcodelink?device_name=almanac' --output qr.png
-   ```
-   Open `qr.png`, then in your phone: **Signal → Settings → Linked Devices → + → scan**.
-3. Configure Almanac (`.env`):
-   ```ini
-   CHANNEL=signal
-   SIGNAL_MODE=self
-   SIGNAL_NUMBER=+4799999999      # YOUR own number (the account you just linked)
-   ALLOWED_CHAT_IDS=4799999999    # your number's digits, no '+'
-   ```
-4. `docker compose up -d --build`, then open your **Note to Self** chat in Signal and say
-   "hi". Almanac replies right there.
-
-**Even cleaner — give it a dedicated group (recommended).** Rather than reusing Note to
-Self, make a Signal group with just you so Almanac has its own chat. With the sidecar
-already paired:
+## Quick start
 
 ```bash
-# create a self-only group, then read back its id
-curl -X POST 'http://localhost:8080/v1/groups/+4799999999' \
-  -H 'Content-Type: application/json' -d '{"name":"Almanac","members":[]}'
-curl 'http://localhost:8080/v1/groups/+4799999999'      # copy the group's "id"
+cp .env.example .env          # set ALMANAC_SECRET_KEY + your LLM_* (OpenRouter/vLLM)
+make up                       # build + start everything (CHANNEL=signal by default)
+make qr                       # fetches qr.png
+#  → scan qr.png in Signal → Settings → Linked Devices → +
 ```
 
-Set `SIGNAL_GROUP_ID=<that id>` in `.env` (it overrides `SIGNAL_MODE`). Almanac now reacts
-**only** to that group and replies there — every other chat, including Note to Self, is
-ignored. (Reply/quote a message in the group to continue its thread.)
+That's it. Within about a minute the cron auto‑detects your number and creates an **Almanac**
+group — open it in Signal and say "hi". (If you'd rather not wait, `docker compose restart
+signal` then message it.)
 
----
+Check it came up:
+```bash
+make config        # channel=signal, signal_number=+47…, signal_group_id=group.…
+make messages      # your message + the reply
+```
 
-## Option B — dedicated bot number
+## How the auto-setup works
 
-The bot gets its **own** Signal identity — a number that can receive an SMS code and **isn't
-already on Signal** (spare SIM, VoIP, Google Voice…). You then DM that number.
+A once-a-minute job (`signal_ensure`) does, idempotently:
+
+1. **Number** — if `signal_number` is blank, read it from the linked account (`GET /v1/accounts`).
+2. **Group** — if `signal_group_id` is blank (and not team mode), find a group named
+   `Almanac` (`GET /v1/groups`); if none, create one (`POST /v1/groups`). Either way it pins
+   the id. The group lives in Signal, not the DB — so wiping the DB just rediscovers it.
+
+So a clean start needs no manual ids. Override any of it with `SIGNAL_NUMBER`,
+`SIGNAL_GROUP_NAME`, or `SIGNAL_GROUP_ID` in `.env` if you want.
+
+## Start fresh (for testing)
 
 ```bash
-docker compose up -d signal
-# 1) Solve a captcha (open the signal-cli captcha page, complete it, copy the full
-#    token starting "signalcaptcha://"):  https://signalcaptchas.org/registration/generate.html
-# 2) Request the SMS code:
-curl -X POST 'http://localhost:8080/v1/register/+4712345678' \
-  -H 'Content-Type: application/json' -d '{"captcha":"signalcaptcha://signal-recaptcha-..."}'
-# 3) Verify:
-curl -X POST 'http://localhost:8080/v1/register/+4712345678/verify/123456'
+make fresh        # wipe the DB, restart; KEEPS the Signal pairing (no re-scan).
+                  # The Almanac group is re-discovered automatically.
+make fresh-hard   # also wipe the pairing — you'll re-scan the QR (make qr).
 ```
 
-```ini
-CHANNEL=signal
-SIGNAL_MODE=number
-SIGNAL_NUMBER=+4712345678      # the bot's number you registered
-ALLOWED_CHAT_IDS=4799999999    # YOUR number's digits, no '+'
-```
+## Alternatives
 
-Then `docker compose up -d --build` and DM the bot's number from your Signal.
+- **No group, just Note-to-Self:** set `SIGNAL_AUTO_GROUP=off` and `SIGNAL_MODE=self`; you
+  chat in your Signal "Note to Self" instead of a group.
+- **Dedicated bot number** (most robust; needed for team): instead of QR-linking your own
+  account, register a separate number — `docker compose up -d signal`, then
+  `POST /v1/register/<number>` (with a captcha token from the signal-cli captcha page) and
+  `POST /v1/register/<number>/verify/<code>`. Set `SIGNAL_MODE=number`, `SIGNAL_NUMBER=<it>`,
+  `SIGNAL_GROUP_ID=` empty, and DM that number.
+- **Team — several people, one shared instance:** `TEAM_MODE=on` + a **dedicated number**
+  (above). Each member DMs it from their own Signal; the bot identifies them by phone,
+  shares the KB / todos / calendar / notes (attributed), and replies to each **privately**.
+  No group; all 1:1. Put each member's digits (no `+`) in `ALLOWED_CHAT_IDS` as the roster.
 
----
-
-## Team — multiple people, one shared instance
-
-Want several people on **one shared Almanac** (shared knowledge base / todos / calendar /
-notes) but each chatting **privately**? Use team mode with the **dedicated‑number** setup
-(Option B) — not QR linking, not a group:
-
-1. Register one team number (Option B), then set `TEAM_MODE=on`, `CHANNEL=signal`,
-   `SIGNAL_MODE=number`, and leave `SIGNAL_GROUP_ID` empty.
-2. List each member's number digits (no `+`) in `ALLOWED_CHAT_IDS` — that's your roster.
-3. Each member adds the team number and **DMs it from their own Signal**. The bot identifies
-   them by phone number, attributes their entries (you'll see "· Alice" on shared todos), and
-   replies to each **privately**. The morning summary DMs each member their own inbox.
-
-Everything is shared except email/credentials, which stay per‑member — and there's **no group
-chat**, every conversation is 1:1.
-
-## Verify / operate
+## Troubleshooting
 
 ```bash
-docker compose logs --tail=30 signal           # pairing / receive health
-# send straight through the sidecar to confirm the account works:
-curl -X POST 'http://localhost:8080/v2/send' -H 'Content-Type: application/json' \
-  -d '{"message":"hi from almanac","number":"+4799999999","recipients":["+4799999999"]}'
+make signal-logs    # raw envelopes — the ground truth for what arrives & in what shape
+make config         # what channel/number/group the DB actually has
 ```
 
-Change config live (without recreating the data volume):
-```bash
-docker compose exec -T db psql -U almanac -d almanac -c \
-  "SELECT set_cfg('channel','signal'); SELECT set_cfg('signal_mode','self');
-   SELECT set_cfg('signal_number','+4799999999');"
-```
+| Symptom | Fix |
+|---|---|
+| QR "link failed" | The sidecar must be in `MODE: normal` to link a fresh account (it is by default). Scan **promptly** — the QR expires in a minute or two. |
+| `signal_number` stays blank | Not linked yet, or `make qr` not scanned. Check `make signal-logs`. |
+| No Almanac group appears | The auto-create can fail on some signal-cli versions if a group needs ≥1 member — just create a group named **Almanac** in the app; the job will find it. |
+| Messages in `signal-logs` but 0 ingested | Your own sends may arrive in a shape the parser doesn't match — paste me a `signal-logs` line. Or use a dedicated number (bulletproof). |
+| Changed `.env`, nothing changed | `.env` loads only on first DB init. Use `make fresh`, or `set_cfg(...)` live. |
 
-## Notes
-
-- **Switch back to Telegram** anytime: `CHANNEL=telegram`.
-- **Port 8080** is only needed for pairing/registration; you can drop the `ports:` mapping
-  from the `signal` service afterwards (the db reaches it over the compose network anyway).
-- **Not using Signal?** Delete the `signal` service (and its `db.depends_on` line) from
-  `docker-compose.yml`; nothing else needs it when `channel=telegram`.
-- Pairing/registration data lives in `./signal-data` — back it up.
-- `self` is the default mode *on purpose*: if you pair by QR but forget to set the mode, the
-  worst case is "the bot stays quiet," never "the bot answers my contacts."
-- Exact Note-to-Self delivery can vary slightly by signal-cli version. If `self` mode never
-  ingests your messages, check `docker compose logs signal` and try Option B as a fallback.
-- For a designated group, `SIGNAL_GROUP_ID` must match the `groupId` in received messages and
-  be accepted as a send recipient — normally the same string from `GET /v1/groups`. If group
-  mode stays quiet, check `docker compose logs signal` for the exact `groupId` and use that.
+The `id` the group is created/found with must match the `groupId` in received messages —
+normally the same string from `GET /v1/groups`. If the group exists but messages still don't
+ingest, `make signal-logs` shows the received `groupId`; tell me if it differs from
+`make config`'s `signal_group_id` and I'll reconcile them.

@@ -14,11 +14,13 @@
 -- matches Telegram — session-window, #slug, /new, and reply/quote to continue.
 -- ===========================================================================
 
-SELECT set_cfg('channel',         'telegram');           -- 'telegram' | 'signal'
-SELECT set_cfg('signal_base_url', 'http://signal:8080');
-SELECT set_cfg('signal_number',   '');                   -- the account's number, e.g. +4712345678
-SELECT set_cfg('signal_mode',     'self');               -- 'self' (QR-paired, Note-to-Self) | 'number' (dedicated bot number)
-SELECT set_cfg('signal_group_id', '');                   -- if set: react ONLY to this group and reply there (overrides mode)
+SELECT set_cfg('channel',          'signal');            -- 'signal' (default) | 'telegram'
+SELECT set_cfg('signal_base_url',  'http://signal:8080');
+SELECT set_cfg('signal_number',    '');                  -- auto-detected from the linked account when blank
+SELECT set_cfg('signal_mode',      'self');              -- fallback when there's no group: 'self' (Note-to-Self) | 'number'
+SELECT set_cfg('signal_group_id',  '');                  -- the group it talks in; auto-managed when blank (signal_ensure)
+SELECT set_cfg('signal_group_name','Almanac');           -- name of the group to auto-create / reuse
+SELECT set_cfg('signal_auto_group','on');                -- on: auto-create/find the group (personal); off: manual
 
 -- Outbound to Signal. p_chat_id is the recipient's number digits; we re-add '+'.
 CREATE OR REPLACE FUNCTION signal_send(p_chat_id bigint, p_text text)
@@ -52,6 +54,59 @@ BEGIN
     RETURN signal_send(p_chat_id, p_text);
   END IF;
   RETURN tg_send_telegram(p_chat_id, p_text, p_reply_to);
+END $$;
+
+-- Idempotent Signal setup so there's nothing to configure by hand: auto-detect
+-- the linked account's number, and (personal mode) auto-create or reuse the named
+-- group it talks in. Runs from the almanac-signal cron; a no-op once both are
+-- known. Re-running from a clean DB just rediscovers the existing group (the
+-- group lives in Signal, not the DB), so it's safe to wipe and restart.
+CREATE OR REPLACE FUNCTION signal_ensure()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  base text := cfg('signal_base_url'); num text := cfg('signal_number');
+  gname text := cfg('signal_group_name','Almanac');
+  resp http_response; arr jsonb; g jsonb; gid text;
+BEGIN
+  IF cfg('channel','signal') <> 'signal' OR base IS NULL THEN RETURN; END IF;
+
+  -- 1) discover the linked account's number (QR-paired personal use)
+  IF COALESCE(num,'') = '' THEN
+    BEGIN resp := almanac_http_get(base || '/v1/accounts'); EXCEPTION WHEN others THEN RETURN; END;
+    IF resp.status BETWEEN 200 AND 299 THEN
+      num := safe_jsonb(resp.content)->>0;                          -- ["+47..."]
+      IF num IS NULL OR num !~ '^\+' THEN num := safe_jsonb(resp.content)->0->>'number'; END IF;
+      IF num ~ '^\+[0-9]+$' THEN PERFORM set_cfg('signal_number', num); ELSE num := ''; END IF;
+    END IF;
+  END IF;
+  IF COALESCE(num,'') = '' THEN RETURN; END IF;                     -- not linked yet
+
+  -- 2) auto-manage the group (personal only; team uses individual DMs, no group)
+  IF cfg('team_mode','off') = 'on'
+     OR cfg('signal_auto_group','on') <> 'on'
+     OR COALESCE(cfg('signal_group_id'),'') <> '' THEN
+    RETURN;
+  END IF;
+
+  BEGIN resp := almanac_http_get(base || '/v1/groups/' || urlencode(num)); EXCEPTION WHEN others THEN RETURN; END;
+  IF resp.status BETWEEN 200 AND 299 THEN
+    arr := safe_jsonb(resp.content);
+    IF jsonb_typeof(arr) = 'array' THEN
+      FOR g IN SELECT value FROM jsonb_array_elements(arr) LOOP
+        IF lower(g->>'name') = lower(gname) THEN gid := g->>'id'; EXIT; END IF;
+      END LOOP;
+    END IF;
+  END IF;
+
+  IF COALESCE(gid,'') = '' THEN                                     -- not found → create it
+    BEGIN
+      resp := almanac_http_post(base || '/v1/groups/' || urlencode(num),
+                jsonb_build_object('name', gname, 'members', '[]'::jsonb));
+    EXCEPTION WHEN others THEN RETURN; END;
+    IF resp.status BETWEEN 200 AND 299 THEN gid := safe_jsonb(resp.content)->>'id'; END IF;
+  END IF;
+
+  IF COALESCE(gid,'') <> '' THEN PERFORM set_cfg('signal_group_id', gid); END IF;
 END $$;
 
 -- Pull new Signal messages, resolve each to a thread, queue as pending. The
@@ -170,6 +225,6 @@ END $$;
 CREATE OR REPLACE FUNCTION inbound_poll()
 RETURNS int LANGUAGE plpgsql AS $$
 BEGIN
-  IF cfg('channel','telegram') = 'signal' THEN RETURN signal_poll(); END IF;
-  RETURN tg_poll();
+  IF cfg('channel','signal') = 'telegram' THEN RETURN tg_poll(); END IF;
+  RETURN signal_poll();
 END $$;

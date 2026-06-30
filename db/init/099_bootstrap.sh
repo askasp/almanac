@@ -45,5 +45,7 @@ set_cfg channel          "${CHANNEL:-}"
 set_cfg signal_mode      "${SIGNAL_MODE:-}"
 set_cfg signal_number    "${SIGNAL_NUMBER:-}"
 set_cfg signal_group_id  "${SIGNAL_GROUP_ID:-}"
+set_cfg signal_group_name "${SIGNAL_GROUP_NAME:-}"
+set_cfg signal_auto_group "${SIGNAL_AUTO_GROUP:-}"
 
 echo "[almanac] bootstrap complete."
