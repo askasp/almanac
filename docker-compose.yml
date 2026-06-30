@@ -96,7 +96,10 @@ services:
     image: bbernhard/signal-cli-rest-api:latest
     restart: unless-stopped
     environment:
-      MODE: json-rpc        # persistent daemon → fast, non-blocking receive
+      # 'normal' so QR linking / number registration works out of the box —
+      # json-rpc mode can't set up a fresh account. Once you've linked, you can
+      # switch this to 'json-rpc' and restart for faster, non-blocking receive.
+      MODE: normal
     volumes:
       - ./signal-data:/home/.local/share/signal-cli   # persist registration/link
     ports:
