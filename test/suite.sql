@@ -375,8 +375,9 @@ BEGIN
   RAISE NOTICE 'Test P passed';
 END $$;
 
-\echo '== Test Q: signal channel (poll + send round-trip) =='
+\echo '== Test Q: signal dedicated-number channel (poll + send round-trip) =='
 SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_mode','number');
 SELECT set_cfg('signal_base_url','http://signal');
 SELECT set_cfg('signal_number','+15550001111');
 UPDATE messages SET status='done' WHERE status='pending';   -- clear earlier tests' unprocessed intake
@@ -402,6 +403,35 @@ BEGIN
   RAISE NOTICE 'Test Q passed';
 END $$;
 SELECT set_cfg('channel','telegram');   -- restore default
+
+\echo '== Test Q2: signal note-to-self (QR-paired/linked mode) =='
+SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_mode','self');
+SELECT set_cfg('signal_base_url','http://signal');
+SELECT set_cfg('signal_number','+15550009999');
+UPDATE messages SET status='done' WHERE status='pending';
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('v1/receive', '[{"envelope":{"source":"+15550009999","sourceNumber":"+15550009999","timestamp":1700000002000,"syncMessage":{"sentMessage":{"destinationNumber":"+15550009999","timestamp":1700000002000,"message":"note to self hi"}}}},{"envelope":{"source":"+15558887777","sourceNumber":"+15558887777","timestamp":1700000003000,"dataMessage":{"timestamp":1700000003000,"message":"hi from a contact"}}}]'),
+ ('chat/completions','{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"noted"}}]}'),
+ ('v2/send','{"timestamp":"1"}');
+DO $$
+DECLARE n bigint;
+BEGIN
+  PERFORM inbound_poll();
+  -- your Note-to-Self message is ingested...
+  SELECT count(*) INTO n FROM messages WHERE content='note to self hi' AND status='pending';
+  ASSERT n=1, 'note-to-self message not ingested: '||n;
+  -- ...and a contact's direct message is IGNORED in self mode
+  SELECT count(*) INTO n FROM messages WHERE content='hi from a contact';
+  ASSERT n=0, 'self mode must ignore contacts'' messages, got '||n;
+  PERFORM process_pending();
+  -- the reply is routed back to your own number (lands in Note to Self)
+  SELECT count(*) INTO n FROM http_mock_queue WHERE seen_uri ILIKE '%v2/send%' AND seen_body ILIKE '%+15550009999%';
+  ASSERT n>=1, 'reply not routed to your own number (note to self)';
+  RAISE NOTICE 'Test Q2 passed';
+END $$;
+SELECT set_cfg('channel','telegram');   -- restore defaults
+SELECT set_cfg('signal_mode','self');
 
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

@@ -14,7 +14,8 @@
 
 SELECT set_cfg('channel',         'telegram');           -- 'telegram' | 'signal'
 SELECT set_cfg('signal_base_url', 'http://signal:8080');
-SELECT set_cfg('signal_number',   '');                   -- the bot's number, e.g. +4712345678
+SELECT set_cfg('signal_number',   '');                   -- the account's number, e.g. +4712345678
+SELECT set_cfg('signal_mode',     'self');               -- 'self' (QR-paired, Note-to-Self) | 'number' (dedicated bot number)
 
 -- Outbound to Signal. p_chat_id is the recipient's number digits; we re-add '+'.
 CREATE OR REPLACE FUNCTION signal_send(p_chat_id bigint, p_text text)
@@ -44,33 +45,61 @@ END $$;
 -- Pull new Signal messages, resolve each to a thread, queue as pending. The
 -- receive endpoint drains its own queue, so (unlike Telegram getUpdates) there
 -- is no offset to track.
+--   mode 'self'   : the sidecar is a linked device on YOUR account (paired by
+--                   QR). Only act on your own "Note to Self" thread — a note you
+--                   send from your phone arrives as a sync sentMessage to your
+--                   own number (some versions deliver it as a dataMessage from
+--                   yourself). Your contacts' messages are ignored entirely.
+--   mode 'number' : the bot has its own dedicated number; read direct messages.
 CREATE OR REPLACE FUNCTION signal_poll()
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
   base text := cfg('signal_base_url'); num text := cfg('signal_number');
-  resp http_response; arr jsonb; e jsonb; dm jsonb;
+  mode text := cfg('signal_mode','self');
+  self_digits text := NULLIF(regexp_replace(COALESCE(num,''), '\D', '', 'g'), '');
+  resp http_response; arr jsonb; e jsonb; dm jsonb; sm jsonb;
   v_src text; v_digits bigint; v_text text; v_ts bigint;
   v_thread bigint; v_slug text; v_content text; cnt int := 0;
 BEGIN
   IF cfg('poll_enabled','on') <> 'on' OR num IS NULL OR num = '' THEN RETURN 0; END IF;
   BEGIN
     resp := almanac_http_get(base || '/v1/receive/' || urlencode(num));
-  EXCEPTION WHEN others THEN RETURN 0; END;          -- sidecar down / not registered yet
+  EXCEPTION WHEN others THEN RETURN 0; END;          -- sidecar down / not paired yet
   IF resp.status NOT BETWEEN 200 AND 299 THEN RETURN 0; END IF;
   arr := safe_jsonb(resp.content);
   IF jsonb_typeof(arr) <> 'array' THEN RETURN 0; END IF;
 
   FOR e IN SELECT value FROM jsonb_array_elements(arr) LOOP
+    v_text := NULL; v_digits := NULL; v_ts := NULL;
     dm := e->'envelope'->'dataMessage';
-    CONTINUE WHEN dm IS NULL;                          -- receipts / typing / sync
-    v_text := dm->>'message';
-    CONTINUE WHEN v_text IS NULL OR btrim(v_text) = '';
-    CONTINUE WHEN dm->'groupInfo' IS NOT NULL;         -- v1: 1:1 only
-    v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
-    CONTINUE WHEN v_src IS NULL OR v_src !~ '^\+[0-9]+$';
-    v_digits := replace(v_src, '+', '')::bigint;
+    sm := e->'envelope'->'syncMessage'->'sentMessage';
+
+    IF mode = 'self' THEN
+      IF sm IS NOT NULL AND sm->'groupInfo' IS NULL
+         AND regexp_replace(COALESCE(sm->>'destinationNumber', sm->>'destination', ''), '\D','','g') = self_digits THEN
+        v_text := sm->>'message';
+        v_ts := COALESCE((sm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+      ELSIF dm IS NOT NULL AND dm->'groupInfo' IS NULL
+            AND regexp_replace(COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source', ''), '\D','','g') = self_digits THEN
+        v_text := dm->>'message';
+        v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+      END IF;
+      v_digits := self_digits::bigint;                 -- reply lands in your Note to Self
+    ELSE
+      IF dm IS NOT NULL AND dm->'groupInfo' IS NULL THEN
+        v_src := COALESCE(e->'envelope'->>'sourceNumber', e->'envelope'->>'source');
+        IF v_src ~ '^\+[0-9]+$' THEN
+          v_text := dm->>'message';
+          v_digits := replace(v_src, '+', '')::bigint;
+          v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+        END IF;
+      END IF;
+    END IF;
+
+    CONTINUE WHEN v_text IS NULL OR btrim(v_text) = '' OR v_digits IS NULL;
     CONTINUE WHEN NOT tg_allowed(v_digits, v_digits);  -- allowlist: list digits, no '+'
-    v_ts := COALESCE((dm->>'timestamp')::bigint, (e->'envelope'->>'timestamp')::bigint);
+    CONTINUE WHEN EXISTS (SELECT 1 FROM messages         -- idempotent receive (no re-processing / echo)
+                          WHERE tg_chat_id = v_digits AND tg_message_id = v_ts);
     v_content := v_text; v_thread := NULL;
 
     IF lower(btrim(v_text)) ~ '^/new(\s|$)' THEN
