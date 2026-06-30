@@ -48,6 +48,7 @@ services:
       - browser
       - searxng
       - opencode
+      - signal
 
   browser:
     build: ./services/browser
@@ -87,6 +88,19 @@ services:
       SEARXNG_BASE_URL: http://searxng:8080/
     volumes:
       - ./services/searxng:/etc/searxng:ro
+
+  # Signal channel sidecar (only needed when CHANNEL=signal). Holds the bot's
+  # registered Signal number; the db polls it over the compose network. Port 8080
+  # is published only so you can register/link the number once — see docs/SIGNAL.md.
+  signal:
+    image: bbernhard/signal-cli-rest-api:latest
+    restart: unless-stopped
+    environment:
+      MODE: json-rpc        # persistent daemon → fast, non-blocking receive
+    volumes:
+      - ./signal-data:/home/.local/share/signal-cli   # persist registration/link
+    ports:
+      - "8080:8080"
 
 volumes:
   pgdata:

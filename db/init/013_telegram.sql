@@ -24,7 +24,7 @@ END $$;
 
 -- Send a message. Returns the Telegram message_id (for thread chaining), or
 -- NULL. Falls back to sending without reply_to if the replied-to msg is gone.
-CREATE OR REPLACE FUNCTION tg_send(p_chat_id bigint, p_text text, p_reply_to bigint DEFAULT NULL)
+CREATE OR REPLACE FUNCTION tg_send_telegram(p_chat_id bigint, p_text text, p_reply_to bigint DEFAULT NULL)
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE token text := get_secret('telegram_token'); url text; body jsonb; resp http_response;
 BEGIN

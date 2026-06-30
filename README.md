@@ -95,6 +95,9 @@ See **[docs/COOKBOOK.md](docs/COOKBOOK.md)** for worked examples — daily email
 coding, flight tracking, custom tables, reminders — each with what works by default and
 the exact setup to run.
 
+Prefer **Signal**? Set `CHANNEL=signal` and follow **[docs/SIGNAL.md](docs/SIGNAL.md)** — the
+bot talks through a bundled `signal-cli` sidecar instead of Telegram, no code changes.
+
 ## Pipelines
 
 A pipeline is an ordered list of steps stored as plain rows. Steps are:

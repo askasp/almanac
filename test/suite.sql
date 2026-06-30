@@ -29,6 +29,7 @@ SET almanac.secret_key = 'testkey';
 \ir ../db/init/020_schedule.sql
 \ir ../db/init/021_userdata.sql
 \ir ../db/init/022_github.sql
+\ir ../db/init/023_signal.sql
 \ir ../db/init/030_team.sql
 \ir ../db/init/090_cron.sql
 
@@ -373,6 +374,34 @@ BEGIN
   ASSERT r LIKE 'ERROR:%', 'missing owner should error: '||r;
   RAISE NOTICE 'Test P passed';
 END $$;
+
+\echo '== Test Q: signal channel (poll + send round-trip) =='
+SELECT set_cfg('channel','signal');
+SELECT set_cfg('signal_base_url','http://signal');
+SELECT set_cfg('signal_number','+15550001111');
+UPDATE messages SET status='done' WHERE status='pending';   -- clear earlier tests' unprocessed intake
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('v1/receive', '[{"envelope":{"source":"+15551234567","sourceNumber":"+15551234567","timestamp":1700000000000,"dataMessage":{"timestamp":1700000000000,"message":"hello from signal"}}}]'),
+ ('chat/completions','{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"hi over signal"}}]}'),
+ ('v2/send','{"timestamp":"1700000000001"}');
+DO $$
+DECLARE n bigint;
+BEGIN
+  -- inbound_poll routes to signal_poll because channel='signal'
+  PERFORM inbound_poll();
+  SELECT count(*) INTO n FROM messages WHERE content='hello from signal' AND status='pending';
+  ASSERT n=1, 'signal_poll did not ingest the message: '||n;
+  SELECT tg_chat_id INTO n FROM messages WHERE content='hello from signal' ORDER BY id DESC LIMIT 1;
+  ASSERT n=15551234567, 'sender number not stored as bigint digits: '||n;
+  -- process it; tg_send must route the reply to the signal sidecar (/v2/send)
+  PERFORM process_pending();
+  SELECT count(*) INTO n FROM http_mock_queue WHERE seen_uri ILIKE '%v2/send%' AND seen_body ILIKE '%hi over signal%';
+  ASSERT n>=1, 'reply not sent via the signal sidecar';
+  SELECT count(*) INTO n FROM http_mock_queue WHERE seen_uri ILIKE '%v2/send%' AND seen_body ILIKE '%+15551234567%';
+  ASSERT n>=1, 'reply not addressed to the sender number';
+  RAISE NOTICE 'Test Q passed';
+END $$;
+SELECT set_cfg('channel','telegram');   -- restore default
 
 \echo ''
 \echo '================  ALL TESTS PASSED  ================'

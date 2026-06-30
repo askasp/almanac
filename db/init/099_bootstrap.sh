@@ -41,5 +41,7 @@ set_cfg opencode_base_url "${OPENCODE_BASE_URL:-}"
 set_cfg gmail_client_id  "${GMAIL_CLIENT_ID:-}"
 set_cfg team_mode        "${TEAM_MODE:-}"
 set_cfg allowed_chat_ids "${ALLOWED_CHAT_IDS:-}"
+set_cfg channel          "${CHANNEL:-}"
+set_cfg signal_number    "${SIGNAL_NUMBER:-}"
 
 echo "[almanac] bootstrap complete."
