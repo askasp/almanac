@@ -224,7 +224,44 @@ psql -c "SELECT daily_summary();"   -- the full 7am DM, right now
 
 ---
 
-## 9. Lock the bot to yourself (recommended)
+## 9. Weekly GitHub commit summary
+
+> **You say:** "summarize the commits to main on askasp/almanac from the last week"
+> **Or scheduled:** "every Monday at 9, summarize the last week's commits to main
+> on askasp/almanac and DM me"
+
+**In place by default:** The `github_commits` tool fetches a branch's commits
+(owner, repo, branch defaults to `main`, window defaults to the last 7 days, max
+100) and the model summarizes them. **Public** repos work with no setup. For the
+recurring version, the model authors a pipeline (`github_commits` → an `ai`
+"summarize into a short changelog" step → `notify`) and schedules it as a
+`pipeline-<slug>` cron job — no new code.
+
+**Setup (run once):**
+
+- **Public repo:** nothing — just ask.
+- **Private repo** (or to dodge the ~60 req/hr unauthenticated limit): add a
+  GitHub token — a fine-grained or classic PAT with read access — as the
+  `github_token` secret. Set `GITHUB_TOKEN` in `.env` before boot, or live:
+  ```sql
+  psql -c "SELECT set_secret('github_token','ghp_xxx');"
+  ```
+- **For the weekly DM**, after the model builds the pipeline, inspect/drive it:
+  ```sql
+  psql -c "SELECT slug, cron_expr FROM pipelines;"
+  psql -c "SELECT jobname, schedule FROM cron.job WHERE jobname LIKE 'pipeline-%';"
+  -- run it now instead of waiting for Monday (use the real slug)
+  psql -c "SELECT run_pipeline((SELECT id FROM pipelines WHERE slug='commits'), 'manual');"
+  ```
+
+**Test the fetch immediately:**
+```sql
+psql -c "SELECT github_commits_digest('askasp','almanac','main',7);"
+```
+
+---
+
+## 10. Lock the bot to yourself (recommended)
 
 By default anyone who finds your bot can message it. Restrict it:
 

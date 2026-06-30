@@ -28,6 +28,7 @@ SET almanac.secret_key = 'testkey';
 \ir ../db/init/019_opencode.sql
 \ir ../db/init/020_schedule.sql
 \ir ../db/init/021_userdata.sql
+\ir ../db/init/022_github.sql
 \ir ../db/init/030_team.sql
 \ir ../db/init/090_cron.sql
 
@@ -353,6 +354,24 @@ BEGIN
   r := execute_tool('query_rows', '{"table":"books","match":{"title":"Dune"}}'::jsonb);
   ASSERT r ILIKE '%Dune%', 'query_rows after describe: '||r;
   RAISE NOTICE 'Test O passed';
+END $$;
+
+\echo '== Test P: github commit digest =='
+INSERT INTO http_mock_queue(match,body) VALUES
+ ('api.github.com', '[{"sha":"abc1234def","commit":{"message":"Fix the parser\n\nlong body here","author":{"name":"Aksel","date":"2026-06-28T10:00:00Z"}},"author":{"login":"askasp"}},{"sha":"99887766aa","commit":{"message":"Add a feature","author":{"name":"Aksel","date":"2026-06-27T09:00:00Z"}},"author":null}]');
+DO $$
+DECLARE r text;
+BEGIN
+  r := execute_tool('github_commits', '{"owner":"askasp","repo":"almanac","branch":"main","days":7}'::jsonb);
+  ASSERT r ILIKE '%2 commit(s) on main%', 'count/branch: '||r;
+  ASSERT r ILIKE '%abc1234%', 'short sha: '||r;
+  ASSERT r ILIKE '%Fix the parser%', 'first line: '||r;
+  ASSERT r NOT ILIKE '%long body here%', 'should show only the first message line: '||r;
+  ASSERT r ILIKE '%askasp%', 'author login: '||r;
+  ASSERT r ILIKE '%Aksel%', 'fallback to commit author name when login is null: '||r;
+  r := execute_tool('github_commits', '{"repo":"almanac"}'::jsonb);
+  ASSERT r LIKE 'ERROR:%', 'missing owner should error: '||r;
+  RAISE NOTICE 'Test P passed';
 END $$;
 
 \echo ''

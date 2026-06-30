@@ -28,6 +28,7 @@ set_secret telegram_token       "${TELEGRAM_TOKEN:-}"
 set_secret llm_api_key          "${LLM_API_KEY:-not-needed}"
 set_secret embed_api_key        "${EMBED_API_KEY:-not-needed}"
 set_secret gmail_client_secret  "${GMAIL_CLIENT_SECRET:-}"
+set_secret github_token         "${GITHUB_TOKEN:-}"
 
 # Config (non-secret) — override the defaults from 004_config.sql with env
 set_cfg llm_base_url     "${LLM_BASE_URL:-}"
