@@ -2,8 +2,8 @@
 
 Almanac talks over **Signal** by default, through a bundled `signal-cli-rest-api`
 sidecar that Postgres polls over HTTP. It's **self-configuring**: you pair it to your
-Signal once by QR, and it auto-detects your number and auto-creates a private **"Almanac"**
-group it chats in. There's nothing to put in `.env` for Signal beyond `CHANNEL=signal`.
+Signal once by QR, and it auto-detects your number and talks to you in your **"Note to
+Self"** chat. There's nothing to put in `.env` for Signal beyond `CHANNEL=signal`.
 
 > **Scope:** one private conversation (the Almanac group), 1:1. Threading works like
 > Telegram — session window, `#slug`, `/new`, and reply/quote a message to continue it.
@@ -17,9 +17,8 @@ make qr                       # fetches qr.png
 #  → scan qr.png in Signal → Settings → Linked Devices → +
 ```
 
-That's it. Within about a minute the cron auto‑detects your number and creates an **Almanac**
-group — open it in Signal and say "hi". (If you'd rather not wait, `docker compose restart
-signal` then message it.)
+That's it. Within a few seconds the cron auto‑detects your number — open your **Note to Self**
+chat in Signal and say "hi".
 
 Check it came up:
 ```bash
@@ -32,12 +31,12 @@ make messages      # your message + the reply
 A once-a-minute job (`signal_ensure`) does, idempotently:
 
 1. **Number** — if `signal_number` is blank, read it from the linked account (`GET /v1/accounts`).
-2. **Group** — if `signal_group_id` is blank (and not team mode), find a group named
-   `Almanac` (`GET /v1/groups`); if none, create one (`POST /v1/groups`). Either way it pins
-   the id. The group lives in Signal, not the DB — so wiping the DB just rediscovers it.
+2. **(Optional) group** — off by default (`SIGNAL_AUTO_GROUP=off`). QR‑linked personal use
+   talks in **Note to Self**, which reliably syncs to the linked device. A *self‑only* group
+   can't receive your own messages, so auto‑group is off; turn it on only if the group has
+   other members.
 
-So a clean start needs no manual ids. Override any of it with `SIGNAL_NUMBER`,
-`SIGNAL_GROUP_NAME`, or `SIGNAL_GROUP_ID` in `.env` if you want.
+So a clean start needs no manual ids. Override with `SIGNAL_NUMBER` or `ALLOWED_CHAT_IDS`.
 
 ## Start fresh (for testing)
 
@@ -49,8 +48,9 @@ make fresh-hard   # also wipe the pairing — you'll re-scan the QR (make qr).
 
 ## Alternatives
 
-- **No group, just Note-to-Self:** set `SIGNAL_AUTO_GROUP=off` and `SIGNAL_MODE=self`; you
-  chat in your Signal "Note to Self" instead of a group.
+- **A dedicated group instead of Note-to-Self:** `SIGNAL_AUTO_GROUP=on` — but only worthwhile
+  if the group has **other members**; a self‑only group won't deliver your own messages to the
+  linked device.
 - **Dedicated bot number** (most robust; needed for team): instead of QR-linking your own
   account, register a separate number — `docker compose up -d signal`, then
   `POST /v1/register/<number>` (with a captcha token from the signal-cli captcha page) and

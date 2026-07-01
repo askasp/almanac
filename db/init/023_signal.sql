@@ -20,7 +20,7 @@ SELECT set_cfg('signal_number',    '');                  -- auto-detected from t
 SELECT set_cfg('signal_mode',      'self');              -- fallback when there's no group: 'self' (Note-to-Self) | 'number'
 SELECT set_cfg('signal_group_id',  '');                  -- the group it talks in; auto-managed when blank (signal_ensure)
 SELECT set_cfg('signal_group_name','Almanac');           -- name of the group to auto-create / reuse
-SELECT set_cfg('signal_auto_group','on');                -- on: auto-create/find the group (personal); off: manual
+SELECT set_cfg('signal_auto_group','off');               -- off: QR-linked personal use = Note-to-Self (self-only groups don't receive)
 
 -- Outbound to Signal. p_chat_id is the recipient's number digits; we re-add '+'.
 CREATE OR REPLACE FUNCTION signal_send(p_chat_id bigint, p_text text)
