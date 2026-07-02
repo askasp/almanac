@@ -36,7 +36,17 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:5000}
       GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       TEAM_MODE: ${TEAM_MODE:-off}
+      # Access control + chat channel. Bootstrap copies these into config on first
+      # init; empty => the SQL defaults (004_config.sql / 023_signal.sql) stand.
+      ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
+      CHANNEL: ${CHANNEL:-}
+      SIGNAL_MODE: ${SIGNAL_MODE:-}
+      SIGNAL_NUMBER: ${SIGNAL_NUMBER:-}
+      SIGNAL_GROUP_ID: ${SIGNAL_GROUP_ID:-}
+      SIGNAL_GROUP_NAME: ${SIGNAL_GROUP_NAME:-}
+      SIGNAL_AUTO_GROUP: ${SIGNAL_AUTO_GROUP:-}
     volumes:
       - pgdata:/var/lib/postgresql/data
     extra_hosts:
