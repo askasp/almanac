@@ -2,6 +2,13 @@
 # Runs once on first cluster init (after the .sql files). Pulls the pgcrypto
 # key, secrets, and config from the environment into the database. After this,
 # the secrets live only in the encrypted `secrets` table.
+#
+# IMPORTANT: SQL is fed to psql via stdin (heredocs), NOT `psql -c`. psql only
+# performs :'var' / :"var" interpolation when reading from stdin or a file — for
+# a -c command string the ":'v'" is sent to the server verbatim and the
+# statement dies with `syntax error at or near ":"`. Under ON_ERROR_STOP=1 that
+# aborts the whole bootstrap on its first line, silently leaving the DB on the
+# 004_config.sql defaults (i.e. .env is never applied). Keep these as heredocs.
 set -euo pipefail
 
 if [ -z "${ALMANAC_SECRET_KEY:-}" ]; then
@@ -16,12 +23,26 @@ runsql() { psql -v ON_ERROR_STOP=1 --username "$USER" --dbname "$DB" "$@"; }
 
 # Make the pgcrypto key the database default so every later session (including
 # pg_cron workers) can decrypt. Applied at connect time, so the calls below
-# (fresh connections) already see it.
-runsql -v k="$ALMANAC_SECRET_KEY" \
-  -c "ALTER DATABASE \"$DB\" SET almanac.secret_key = :'k';"
+# (fresh connections) already see it. :"db"/:'k' interpolate via stdin.
+runsql -v db="$DB" -v k="$ALMANAC_SECRET_KEY" <<'SQL'
+ALTER DATABASE :"db" SET almanac.secret_key = :'k';
+SQL
 
-set_secret() { [ -n "${2:-}" ] && runsql -v v="$2" -c "SELECT set_secret('$1', :'v');"; }
-set_cfg()    { [ -n "${2:-}" ] && runsql -v v="$2" -c "SELECT set_cfg('$1', :'v');"; }
+# Store a secret / set a config value only when the env value is non-empty.
+# Name and value are bound as psql variables and interpolated via stdin, so
+# nothing is string-concatenated into SQL (safe quoting for any characters).
+set_secret() {
+  [ -n "${2:-}" ] || return 0
+  runsql -v n="$1" -v v="$2" <<'SQL'
+SELECT set_secret(:'n', :'v');
+SQL
+}
+set_cfg() {
+  [ -n "${2:-}" ] || return 0
+  runsql -v n="$1" -v v="$2" <<'SQL'
+SELECT set_cfg(:'n', :'v');
+SQL
+}
 
 # Secrets (encrypted)
 set_secret telegram_token       "${TELEGRAM_TOKEN:-}"
