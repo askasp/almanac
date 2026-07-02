@@ -1,6 +1,6 @@
 # Almanac dev helpers.  Run `make help` for the list.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs signal-logs qr fresh fresh-hard psql messages config
+.PHONY: help up down logs signal-logs qr fresh fresh-hard psql messages config errors actions retry
 
 help:            ## list commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
@@ -39,6 +39,20 @@ messages:        ## show the 10 most recent messages
 	docker compose exec db psql -U almanac -d almanac -c \
 	  "SELECT id,status,role,left(content,50) FROM messages ORDER BY id DESC LIMIT 10;"
 
-config:          ## show the live channel / signal config
+config:          ## show the live channel / signal / llm config
 	docker compose exec db psql -U almanac -d almanac -c \
-	  "SELECT key,value FROM config WHERE key='channel' OR key LIKE 'signal%' ORDER BY key;"
+	  "SELECT key,value FROM config WHERE key='channel' OR key LIKE 'signal%' OR key LIKE 'llm%' ORDER BY key;"
+
+errors:          ## show recent failures + the REAL error text (not the generic 'Sorry')
+	docker compose exec db psql -U almanac -d almanac -c \
+	  "SELECT id, attempts, status, left(content,40) AS msg, left(error,400) AS error \
+	   FROM messages WHERE error IS NOT NULL ORDER BY id DESC LIMIT 10;"
+
+actions:         ## show recent tool calls + results (which tool failed, and why)
+	docker compose exec db psql -U almanac -d almanac -c \
+	  "SELECT id, tool_name, left(result,140) AS result FROM actions ORDER BY id DESC LIMIT 15;"
+
+retry:           ## re-queue failed/stuck messages after you fix config (no need to re-send)
+	docker compose exec db psql -U almanac -d almanac -c \
+	  "UPDATE messages SET status='pending', attempts=0, error=NULL \
+	   WHERE role='user' AND status IN ('error','processing');"
